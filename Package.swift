@@ -18,6 +18,7 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("AudioToolbox"),
                 .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreGraphics"),
             ]
         ),
         .executableTarget(

@@ -23,8 +23,10 @@ private final class Probe: @unchecked Sendable {
     private let liveMode = CommandLine.arguments.contains("--live")
     private var recorder: OpusRecorder?
     private var liveOutput: LiveAudioOutput?
+    private var spotlightSuppressor: SpotlightSuppressor?
     private var remote: IOHIDDevice?
     private var streaming = false
+    private var micButtonDown = false
     private var audioFrames = 0
     private var safetyTimer: Timer?
 
@@ -44,6 +46,12 @@ private final class Probe: @unchecked Sendable {
         if liveMode {
             liveOutput = try LiveAudioOutput(deviceName: "BlackHole 2ch")
             if recorder == nil { recorder = try OpusRecorder(path: nil) }
+            do {
+                spotlightSuppressor = try SpotlightSuppressor()
+                print("spotlight_suppression_ready scope=AR_mic_hold_plus_300ms")
+            } catch {
+                fputs("warning: Spotlight suppression needs Accessibility permission; live audio will still run\n", stderr)
+            }
         }
         let match: [String: Any] = [
             kIOHIDVendorIDKey as String: amazonVendorID,
@@ -100,6 +108,8 @@ private final class Probe: @unchecked Sendable {
         if remote == device {
             remote = nil
             streaming = false
+            micButtonDown = false
+            spotlightSuppressor?.noteMicRelease()
             safetyTimer?.invalidate()
         }
         if let buffer = buffers.removeValue(forKey: device) {
@@ -112,8 +122,16 @@ private final class Probe: @unchecked Sendable {
         let safeLength = max(0, Int(length))
         if audioTest || recorder != nil, reportID == 2, safeLength >= 3 {
             let usage = UInt16(bytes[1]) | (UInt16(bytes[2]) << 8)
-            if usage == 0x0221, !streaming { setAudio(enabled: true) }
-            if usage == 0, streaming { setAudio(enabled: false) }
+            if usage == 0x0221, !micButtonDown {
+                micButtonDown = true
+                spotlightSuppressor?.noteMicPress()
+                if !streaming { setAudio(enabled: true) }
+            }
+            if usage == 0, micButtonDown {
+                micButtonDown = false
+                spotlightSuppressor?.noteMicRelease()
+                if streaming { setAudio(enabled: false) }
+            }
         }
         if reportID == 0xF0 {
             audioFrames += 1
@@ -148,9 +166,11 @@ private final class Probe: @unchecked Sendable {
             audioFrames = 0
             recorder?.start()
             liveOutput?.start()
-            safetyTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            safetyTimer = Timer.scheduledTimer(withTimeInterval: liveMode ? 30 : 10, repeats: false) { [weak self] _ in
                 guard let self, self.streaming else { return }
                 print("\(timestamp()) safety_timeout")
+                self.micButtonDown = false
+                self.spotlightSuppressor?.noteMicRelease()
                 self.setAudio(enabled: false)
             }
         } else {

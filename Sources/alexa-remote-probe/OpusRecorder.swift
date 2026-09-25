@@ -5,6 +5,7 @@ final class OpusRecorder {
     private let decoder: OpaquePointer
     private let destination: URL?
     private var pcm = Data()
+    private var gain: Float = 5
     private(set) var decodedFrames = 0
 
     init(path: String?) throws {
@@ -23,6 +24,7 @@ final class OpusRecorder {
     func start() {
         pcm.removeAll(keepingCapacity: true)
         decodedFrames = 0
+        gain = 5
         _ = opus_decoder_init(decoder, 16_000, 1)
     }
 
@@ -36,13 +38,21 @@ final class OpusRecorder {
             fputs("opus_decode_failed code=\(decoded)\n", stderr)
             return nil
         }
+        let count = Int(decoded)
+        let peak = Float(samples.prefix(count).map { abs(Int32($0)) }.max() ?? 0)
+        let targetGain = min(5, 30_000 / max(peak, 1))
+        gain = targetGain < gain ? targetGain : gain + 0.05 * (targetGain - gain)
+        for index in 0..<count {
+            let scaled = Int((Float(samples[index]) * gain).rounded())
+            samples[index] = Int16(max(-32_768, min(32_767, scaled)))
+        }
         if destination != nil {
             samples.withUnsafeBufferPointer { buffer in
-                pcm.append(contentsOf: UnsafeRawBufferPointer(start: buffer.baseAddress, count: Int(decoded) * 2))
+                pcm.append(contentsOf: UnsafeRawBufferPointer(start: buffer.baseAddress, count: count * 2))
             }
         }
         decodedFrames += 1
-        return Array(samples.prefix(Int(decoded)))
+        return Array(samples.prefix(count))
     }
 
     func finish() throws {
