@@ -20,7 +20,9 @@ private final class Probe: @unchecked Sendable {
     private var buffers: [IOHIDDevice: UnsafeMutablePointer<UInt8>] = [:]
     private let seize = CommandLine.arguments.contains("--seize")
     private let audioTest = CommandLine.arguments.contains("--audio-test")
+    private let liveMode = CommandLine.arguments.contains("--live")
     private var recorder: OpusRecorder?
+    private var liveOutput: LiveAudioOutput?
     private var remote: IOHIDDevice?
     private var streaming = false
     private var audioFrames = 0
@@ -38,6 +40,10 @@ private final class Probe: @unchecked Sendable {
                 throw ProbeError.missingOutputPath
             }
             recorder = try OpusRecorder(path: CommandLine.arguments[index + 1])
+        }
+        if liveMode {
+            liveOutput = try LiveAudioOutput(deviceName: "BlackHole 2ch")
+            if recorder == nil { recorder = try OpusRecorder(path: nil) }
         }
         let match: [String: Any] = [
             kIOHIDVendorIDKey as String: amazonVendorID,
@@ -62,10 +68,11 @@ private final class Probe: @unchecked Sendable {
             throw ProbeError.openFailed(result)
         }
 
-        print("\(timestamp()) probe_started vid=0x0171 pid=0x041E mode=\(recorder != nil ? "record_wav" : (audioTest ? "audio_test" : (seize ? "exclusive" : "read_only")))")
+        print("\(timestamp()) probe_started vid=0x0171 pid=0x041E mode=\(liveMode ? "live" : (recorder != nil ? "record_wav" : (audioTest ? "audio_test" : (seize ? "exclusive" : "read_only"))))")
         if seize { print("Other AR remote buttons are temporarily unavailable to macOS until this process stops.") }
         if audioTest || recorder != nil { print("The probe sends only HID output report F2=01 on mic press and F2=00 on release.") }
-        if recorder != nil { print("Audio is saved locally as 16 kHz mono PCM WAV after mic release.") }
+        if CommandLine.arguments.contains("--record-wav") { print("Audio is saved locally as 16 kHz mono PCM WAV after mic release.") }
+        if liveMode { print("Audio is sent to BlackHole 2ch; select BlackHole 2ch as the microphone in the receiving app.") }
         print("Press ordinary buttons, then hold the Alexa button and speak. Press Control-C to stop.")
         RunLoop.current.run()
     }
@@ -111,7 +118,9 @@ private final class Probe: @unchecked Sendable {
         if reportID == 0xF0 {
             audioFrames += 1
             if recorder != nil, safeLength == 81 {
-                recorder?.appendFrame(UnsafePointer(bytes + 1), count: 80)
+                if let samples = recorder?.appendFrame(UnsafePointer(bytes + 1), count: 80) {
+                    liveOutput?.append(samples)
+                }
             }
             if audioFrames == 1 || audioFrames % 50 == 0 {
                 print("\(timestamp()) audio_frame count=\(audioFrames) length=\(safeLength)")
@@ -138,12 +147,14 @@ private final class Probe: @unchecked Sendable {
         if enabled {
             audioFrames = 0
             recorder?.start()
+            liveOutput?.start()
             safetyTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
                 guard let self, self.streaming else { return }
                 print("\(timestamp()) safety_timeout")
                 self.setAudio(enabled: false)
             }
         } else {
+            liveOutput?.finish()
             do { try recorder?.finish() }
             catch { fputs("wav_save_failed error=\(error)\n", stderr) }
         }

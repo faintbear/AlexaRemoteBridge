@@ -13,11 +13,20 @@ let package = Package(
         .executableTarget(
             name: "alexa-remote-probe",
             dependencies: ["COpus"],
-            linkerSettings: [.linkedFramework("IOKit")]
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("CoreAudio"),
+            ]
         ),
         .executableTarget(
             name: "alexa-gatt-probe",
             linkerSettings: [.linkedFramework("CoreBluetooth")]
+        ),
+        .executableTarget(
+            name: "alexa-event-probe",
+            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("CoreGraphics"), .linkedFramework("IOKit")]
         )
     ]
 )

@@ -2,7 +2,7 @@
 
 An experimental macOS bridge for the original Amazon Alexa Voice Remote (3rd Gen), model `L5B83G`.
 
-The current milestone is working HID microphone activation and local Opus decoding. Live virtual-microphone output is not implemented yet.
+The current milestone is working HID microphone activation, local Opus decoding, and live output to BlackHole 2ch. On the tested Mac, BlackHole's input meter moved in sync with speech from the remote. The Spotlight popup is not suppressed yet.
 
 Identity:
 
@@ -25,6 +25,8 @@ If macOS blocks HID access, enable Input Monitoring for the terminal application
 
 To count microphone frames without saving speech, run `swift run --disable-keychain alexa-remote-probe --audio-test`, then hold and release the mic button. To decode speech into a local 16 kHz mono WAV, run `swift run --disable-keychain alexa-remote-probe --record-wav ./voice-test.wav`. WAV files are ignored by Git. Both modes send only HID output report `F2 01` after button-down and `F2 00` after button-up, with a ten-second safety stop. The command and frame format are documented in [tvbox's Fire TV remote implementation](https://github.com/Andy1210/tvbox/blob/main/docs/voice-satellite.md#how-the-remotes-microphone-works).
 
+For live input, install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole) with `brew install blackhole-2ch` and reboot if the installer asks. Then run `swift run --disable-keychain alexa-remote-probe --live` and choose `BlackHole 2ch` as the microphone inside the receiving app. The bridge selects BlackHole for its own output without changing the Mac's system-wide audio output. Keep other audio applications from sending sound to BlackHole, or their audio will be mixed into the same virtual input.
+
 ## Findings on the tested remote
 
 - A directional button produces HID report `01 50 00 00`, followed by a zeroed release report.
@@ -35,3 +37,11 @@ To count microphone frames without saving speech, run `swift run --disable-keych
 - Exclusive HID capture returned `kIOReturnNotPrivileged` on the tested Mac, even after Input Monitoring permission. The optional `--seize` mode is diagnostic only and may fail for the same reason elsewhere.
 
 The `FE151500-...` service may be related to firmware update and is deliberately untouched. The Spotlight popup is not solved yet; the mic stream and OS shortcut are separate issues.
+
+The `alexa-event-probe` tool logs only key-event metadata within 300 ms of an AR mic press. It identified macOS keycode `177` immediately after the HID `0x0221` mic report. `--suppress` attempts to consume just that keycode in the same short window, but requires macOS Accessibility permission and has not yet been verified on the tested Mac. It is diagnostic, not part of the live bridge.
+
+The first local WAV test decoded cleanly enough to inspect but contained clipped peaks during loud speech. This may be input overload at the remote microphone; audio-quality troubleshooting remains open. The test WAV is local and ignored by Git.
+
+## Planned settings UI
+
+A device-specific button-mapping screen is planned: remote diagram, connected/microphone status, profiles, button learning, short- and long-press actions, and a safe reset. The mic key should default to push-to-talk. No remapping UI is implemented yet.

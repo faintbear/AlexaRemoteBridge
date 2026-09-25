@@ -3,17 +3,17 @@ import Foundation
 
 final class OpusRecorder {
     private let decoder: OpaquePointer
-    private let destination: URL
+    private let destination: URL?
     private var pcm = Data()
     private(set) var decodedFrames = 0
 
-    init(path: String) throws {
+    init(path: String?) throws {
         var error: Int32 = 0
         guard let decoder = opus_decoder_create(16_000, 1, &error), error == OPUS_OK else {
             throw RecorderError.decoder(error)
         }
         self.decoder = decoder
-        destination = URL(fileURLWithPath: path)
+        destination = path.map { URL(fileURLWithPath: $0) }
     }
 
     deinit {
@@ -26,24 +26,27 @@ final class OpusRecorder {
         _ = opus_decoder_init(decoder, 16_000, 1)
     }
 
-    func appendFrame(_ bytes: UnsafePointer<UInt8>, count: Int) {
-        guard count == 80 else { return }
+    func appendFrame(_ bytes: UnsafePointer<UInt8>, count: Int) -> [Int16]? {
+        guard count == 80 else { return nil }
         var samples = [Int16](repeating: 0, count: 320)
         let decoded = samples.withUnsafeMutableBufferPointer { output in
             opus_decode(decoder, bytes, Int32(count), output.baseAddress!, 320, 0)
         }
         guard decoded > 0 else {
             fputs("opus_decode_failed code=\(decoded)\n", stderr)
-            return
+            return nil
         }
-        samples.withUnsafeBufferPointer { buffer in
-            pcm.append(contentsOf: UnsafeRawBufferPointer(start: buffer.baseAddress, count: Int(decoded) * 2))
+        if destination != nil {
+            samples.withUnsafeBufferPointer { buffer in
+                pcm.append(contentsOf: UnsafeRawBufferPointer(start: buffer.baseAddress, count: Int(decoded) * 2))
+            }
         }
         decodedFrames += 1
+        return Array(samples.prefix(Int(decoded)))
     }
 
     func finish() throws {
-        guard !pcm.isEmpty else { return }
+        guard let destination, !pcm.isEmpty else { return }
         var wav = Data()
         wav.append(contentsOf: Array("RIFF".utf8))
         wav.appendLE(UInt32(36 + pcm.count))
