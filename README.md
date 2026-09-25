@@ -1,5 +1,7 @@
 # AlexaRemoteBridge
 
+Product scope and acceptance criteria: [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md).
+
 An experimental macOS bridge for the original Amazon Alexa Voice Remote (3rd Gen), model `L5B83G`.
 
 The current milestone is working HID microphone activation, local Opus decoding, and live output to BlackHole 2ch. On the tested Mac, BlackHole's input meter moved in sync with speech from the remote, and the live bridge prevented the mic key from opening Spotlight during a held press.
