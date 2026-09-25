@@ -4,3 +4,4 @@
 *.pcm
 *.raw
 *.wav
+dist/
