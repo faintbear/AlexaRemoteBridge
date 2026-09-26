@@ -100,8 +100,12 @@ final class SpotlightSuppressor: @unchecked Sendable {
     }
 
     func setMappings(_ mappings: [RemoteButtonMapping]) {
-        state.actionsByKeyCode = Dictionary(uniqueKeysWithValues: mappings.map { ($0.keyCode, $0.action) })
-        state.signaturesByKeyCode = Dictionary(uniqueKeysWithValues: mappings.map { ($0.keyCode, $0.signature) })
+        let keyCodeMappings = mappings.compactMap { mapping -> (UInt16, RemoteButtonMapping)? in
+            guard let keyCode = mapping.keyCode else { return nil }
+            return (keyCode, mapping)
+        }
+        state.actionsByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.action) })
+        state.signaturesByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.signature) })
     }
 
     func noteHardwareButton(signature: String) {
@@ -110,7 +114,7 @@ final class SpotlightSuppressor: @unchecked Sendable {
     }
 
     func beginButtonLearning(action: RemoteButtonAction,
-                             onLearned: @escaping (String, UInt16, RemoteButtonAction) -> Void) {
+                             onLearned: @escaping (String, UInt16?, RemoteButtonAction) -> Void) {
         state.learningAction = action
         state.onButtonLearned = onLearned
     }
@@ -120,7 +124,7 @@ final class SpotlightSuppressor: @unchecked Sendable {
         state.onButtonLearned = nil
     }
 
-    private static func perform(_ action: RemoteButtonAction) {
+    static func perform(_ action: RemoteButtonAction) {
         MainActor.assumeIsolated {
             switch action {
             case .sendReturn:
@@ -463,7 +467,7 @@ private final class State: @unchecked Sendable {
     var actionsByKeyCode: [UInt16: RemoteButtonAction] = [:]
     var suppressedKeyCodes: Set<UInt16> = []
     var learningAction: RemoteButtonAction?
-    var onButtonLearned: ((String, UInt16, RemoteButtonAction) -> Void)?
+    var onButtonLearned: ((String, UInt16?, RemoteButtonAction) -> Void)?
 }
 
 private enum SuppressorError: Error {

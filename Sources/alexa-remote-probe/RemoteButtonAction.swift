@@ -7,7 +7,7 @@ enum RemoteButtonAction: Codable, Equatable {
 
 struct RemoteButtonMapping: Codable, Equatable {
     let signature: String
-    let keyCode: UInt16
+    let keyCode: UInt16?
     let action: RemoteButtonAction
 }
 
@@ -27,6 +27,15 @@ enum RemoteButtonKey: String, Codable, Equatable {
     case rewind, playPause, fastForward
     case mute, volumeUp, tv, volumeDown
     case prime, netflix, disney, hulu
+
+    var isHIDOnly: Bool {
+        switch self {
+        case .prime, .netflix, .disney, .hulu:
+            return true
+        default:
+            return false
+        }
+    }
 
     private static let observedSignatures: [String: RemoteButtonKey] = [
         "01:66:00": .power,
