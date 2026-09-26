@@ -273,6 +273,16 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 
     @objc private func clearMappings() {
+        let alert = NSAlert()
+        alert.messageText = AppLanguage.text("清除全部按键映射？", "Clear All Button Mappings?")
+        alert.informativeText = AppLanguage.text("此操作无法撤销。之后需要重新学习按键。", "This cannot be undone. You will need to learn the buttons again.")
+        alert.alertStyle = .warning
+        let cancelButton = alert.addButton(withTitle: AppLanguage.text("取消", "Cancel"))
+        let clearButton = alert.addButton(withTitle: AppLanguage.text("清除全部", "Clear All"))
+        cancelButton.keyEquivalent = "\r"
+        clearButton.keyEquivalent = ""
+
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
         onClearMappings()
         mappingCount = 0
         refresh()
