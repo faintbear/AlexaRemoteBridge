@@ -76,6 +76,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private let onChooseApp: (String) -> Void
     private let onClearMappings: () -> Void
     private let onRemoveMapping: (Int) -> Void
+    private let onTestAction: (RemoteButtonAction) -> Void
     private let onCancelLearning: () -> Void
     private let onQuit: () -> Void
     private var connected = false
@@ -101,6 +102,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
          onChooseApp: @escaping (String) -> Void,
          onClearMappings: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
+         onTestAction: @escaping (RemoteButtonAction) -> Void,
          onCancelLearning: @escaping () -> Void,
          onQuit: @escaping () -> Void) {
         self.mode = mode
@@ -110,6 +112,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.onChooseApp = onChooseApp
         self.onClearMappings = onClearMappings
         self.onRemoveMapping = onRemoveMapping
+        self.onTestAction = onTestAction
         self.onCancelLearning = onCancelLearning
         self.onQuit = onQuit
         super.init()
@@ -294,6 +297,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                 onChooseApp: onChooseApp,
                 onLearnReturn: { [weak self] in self?.onLearnAction(.sendReturn) },
                 onRemoveMapping: onRemoveMapping,
+                onTestAction: onTestAction,
                 onCancelLearning: onCancelLearning,
                 onLanguageChange: { [weak self] in self?.refresh() }
             )
@@ -324,11 +328,13 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     init(onChooseApp: @escaping (String) -> Void,
          onLearnReturn: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
+         onTestAction: @escaping (RemoteButtonAction) -> Void,
          onCancelLearning: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         let model = MappingDashboardModel(onChooseApp: onChooseApp,
                                           onLearnReturn: onLearnReturn,
                                           onRemoveMapping: onRemoveMapping,
+                                          onTestAction: onTestAction,
                                           onCancelLearning: onCancelLearning,
                                           onLanguageChange: onLanguageChange)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
@@ -377,17 +383,20 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private let onChooseApp: (String) -> Void
     private let onLearnReturn: () -> Void
     private let onRemoveMapping: (Int) -> Void
+    private let onTestAction: (RemoteButtonAction) -> Void
     private let onCancelLearning: () -> Void
     private let onLanguageChange: () -> Void
 
     init(onChooseApp: @escaping (String) -> Void,
          onLearnReturn: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
+         onTestAction: @escaping (RemoteButtonAction) -> Void,
          onCancelLearning: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         self.onChooseApp = onChooseApp
         self.onLearnReturn = onLearnReturn
         self.onRemoveMapping = onRemoveMapping
+        self.onTestAction = onTestAction
         self.onCancelLearning = onCancelLearning
         self.onLanguageChange = onLanguageChange
     }
@@ -420,6 +429,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     func learnReturn() { onLearnReturn() }
     func removeMapping(at index: Int) { onRemoveMapping(index) }
+    func testMapping(_ action: RemoteButtonAction) { onTestAction(action) }
     func cancelLearning() { onCancelLearning() }
     func setLanguage(_ choice: AppLanguage.Choice) { languageSelection = choice.rawValue }
     func openInputMonitoring() {
@@ -749,6 +759,11 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                 }
                 Spacer()
                 Menu {
+                    Button {
+                        model.testMapping(mapping.action)
+                    } label: {
+                        Label(AppLanguage.text("测试映射", "Test Mapping"), systemImage: "play.circle")
+                    }
                     Button(AppLanguage.text("删除映射", "Remove Mapping"), role: .destructive) { model.removeMapping(at: index) }
                 } label: {
                     Image(systemName: "ellipsis").foregroundStyle(.secondary).padding(6)

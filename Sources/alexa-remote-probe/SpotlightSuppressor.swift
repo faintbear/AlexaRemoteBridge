@@ -120,7 +120,7 @@ final class SpotlightSuppressor: @unchecked Sendable {
         state.onButtonLearned = nil
     }
 
-    private static func perform(_ action: RemoteButtonAction) {
+    static func perform(_ action: RemoteButtonAction) {
         MainActor.assumeIsolated {
             switch action {
             case .sendReturn:

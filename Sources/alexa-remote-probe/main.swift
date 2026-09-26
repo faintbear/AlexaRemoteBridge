@@ -128,6 +128,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                  onChooseApp: { [weak self] path in self?.beginButtonLearning(action: .launchApp(path: path)) },
                                  onClearMappings: { [weak self] in self?.clearButtonMappings() },
                                  onRemoveMapping: { [weak self] index in self?.removeButtonMapping(at: index) },
+                                 onTestAction: { action in SpotlightSuppressor.perform(action) },
                                  onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
