@@ -8,6 +8,10 @@ import OSLog
 // Consume that key only in the short window after this remote's mic press.
 final class SpotlightSuppressor: @unchecked Sendable {
     private static let logger = Logger(subsystem: "dev.faintbear.AlexaRemoteBridge", category: "input")
+    private static let focusRetryLimit = 12
+    private static let manualAccessibilityAttribute = "AXManualAccessibility"
+    private static let enhancedAccessibilityAttribute = "AXEnhancedUserInterface"
+    private static let focusDiagnosticDefaultsKey = "lastMappedAppFocusDiagnostic"
     private let tap: CFMachPort
 
     init() throws {
@@ -153,72 +157,288 @@ final class SpotlightSuppressor: @unchecked Sendable {
     }
 
     private static func focusInputAfterActivation(processIdentifier: pid_t) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            guard AXIsProcessTrusted() else {
-                fputs("mapped_app_focus_failed reason=accessibility_not_trusted\n", stderr)
-                return
-            }
-            let appElement = AXUIElementCreateApplication(processIdentifier)
-            var focusedWindowValue: CFTypeRef?
-            let windowResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString,
-                                                             &focusedWindowValue)
-            let root: AXUIElement
-            if windowResult == .success, let focusedWindowValue {
-                root = unsafeDowncast(focusedWindowValue, to: AXUIElement.self)
-            } else {
-                root = appElement
-            }
-            let candidates = focusableTextInputs(under: root, depth: 0, budget: 2_000)
-                .sorted { $0.score > $1.score }
-            for candidate in candidates {
-                if AXUIElementSetAttributeValue(candidate.element, kAXFocusedAttribute as CFString,
-                                                kCFBooleanTrue) == .success {
-                    fputs("mapped_app_input_focused pid=\(processIdentifier) role=\(candidate.role)\n", stderr)
-                    return
-                }
-            }
-            fputs("mapped_app_focus_failed reason=no_focusable_text_input pid=\(processIdentifier)\n", stderr)
-        }
+        focusInputAfterActivation(processIdentifier: processIdentifier, attempt: 0, didClickEditor: false)
     }
 
-    private static func focusableTextInputs(under element: AXUIElement, depth: Int,
-                                            budget: Int) -> [(element: AXUIElement, role: String, score: Int)] {
-        guard depth < 14, budget > 0 else { return [] }
-        var results: [(element: AXUIElement, role: String, score: Int)] = []
-        var roleValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
-           let role = roleValue as? String,
-           [kAXTextAreaRole as String, kAXTextFieldRole as String, kAXComboBoxRole as String].contains(role) {
-            var enabledValue: CFTypeRef?
-            let enabledResult = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString,
-                                                              &enabledValue)
-            let enabled = enabledResult != .success || (enabledValue as? NSNumber)?.boolValue == true
-            var score = role == (kAXTextAreaRole as String) ? 10 : 2
-            for attribute in [kAXDescriptionAttribute, kAXTitleAttribute, kAXPlaceholderValueAttribute,
-                              kAXIdentifierAttribute] {
-                var value: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
-                   let text = value as? String {
-                    let normalized = text.lowercased()
-                    if ["message", "prompt", "ask", "chat", "消息", "输入"].contains(where: normalized.contains) {
-                        score += 30
+    private static func focusInputAfterActivation(processIdentifier: pid_t, attempt: Int,
+                                                  didClickEditor: Bool) {
+        // Web/Electron apps may build their AX tree only after an assistive client
+        // announces itself. Keep scanning briefly while the app's editor mounts.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.35 : 0.25)) {
+            guard AXIsProcessTrusted() else {
+                recordFocusDiagnostic("Failed · Accessibility permission is not granted · pid=\(processIdentifier)")
+                return
+            }
+
+            let application = NSRunningApplication(processIdentifier: processIdentifier)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != processIdentifier {
+                _ = application?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                guard attempt + 1 < focusRetryLimit else {
+                    let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+                    recordFocusDiagnostic("Failed · Target app did not become frontmost · target_pid=\(processIdentifier) frontmost_pid=\(frontmostPID)")
+                    return
+                }
+                focusInputAfterActivation(processIdentifier: processIdentifier, attempt: attempt + 1,
+                                          didClickEditor: didClickEditor)
+                return
+            }
+
+            let appElement = AXUIElementCreateApplication(processIdentifier)
+            let manualResult = AXUIElementSetAttributeValue(
+                appElement,
+                manualAccessibilityAttribute as CFString,
+                kCFBooleanTrue
+            )
+            var fallbackResult: AXError?
+            if manualResult == .attributeUnsupported {
+                fallbackResult = AXUIElementSetAttributeValue(
+                    appElement,
+                    enhancedAccessibilityAttribute as CFString,
+                    kCFBooleanTrue
+                )
+            }
+
+            let windows = applicationWindows(appElement)
+            var candidateCount = 0
+            var allCandidates: [(element: AXUIElement, role: String, score: Int)] = []
+            for window in windows {
+                _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                let candidates = focusableTextInputs(under: window, windowFrame: accessibilityFrame(of: window))
+                    .sorted { $0.score > $1.score }
+                candidateCount += candidates.count
+                allCandidates.append(contentsOf: candidates)
+                for candidate in candidates {
+                    if focusAccessibilityElement(candidate.element, applicationElement: appElement) {
+                        if !didClickEditor, clickAccessibilityElement(candidate.element) {
+                            recordFocusDiagnostic("Editor click sent · bundle=\(application?.bundleIdentifier ?? "unknown") · role=\(candidate.role) · score=\(candidate.score) · attempt=\(attempt + 1)/\(focusRetryLimit)")
+                            focusInputAfterActivation(processIdentifier: processIdentifier,
+                                                      attempt: attempt + 1,
+                                                      didClickEditor: true)
+                            return
+                        }
+                        recordFocusDiagnostic("AX focus confirmed · bundle=\(application?.bundleIdentifier ?? "unknown") · role=\(candidate.role) · score=\(candidate.score) · attempt=\(attempt + 1)/\(focusRetryLimit)")
+                        return
                     }
                 }
             }
-            if enabled { results.append((element, role, score)) }
-        }
 
-        var childrenValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString,
-                                            &childrenValue) == .success,
-              let children = childrenValue as? [AXUIElement] else { return results }
-        var remaining = budget - 1
-        for child in children where remaining > 0 {
-            let found = focusableTextInputs(under: child, depth: depth + 1, budget: remaining)
-            results.append(contentsOf: found)
-            remaining -= found.count + 1
+            // If AX focus is accepted but does not place the insertion point, click
+            // the best-scoring editor once as a final fallback.
+            if !didClickEditor, attempt == 1,
+               let candidate = allCandidates.sorted(by: { $0.score > $1.score }).first,
+               clickAccessibilityElement(candidate.element) {
+                recordFocusDiagnostic("AX focus unconfirmed; editor click sent · bundle=\(application?.bundleIdentifier ?? "unknown") · role=\(candidate.role) · score=\(candidate.score) · windows=\(windows.count) · candidates=\(candidateCount)")
+                focusInputAfterActivation(processIdentifier: processIdentifier,
+                                          attempt: attempt + 1,
+                                          didClickEditor: true)
+                return
+            }
+
+            guard attempt + 1 < focusRetryLimit else {
+                let reason = candidateCount == 0 ? "no_focusable_text_input" : "focus_not_confirmed"
+                recordFocusDiagnostic("Failed · \(reason) · bundle=\(application?.bundleIdentifier ?? "unknown") · windows=\(windows.count) · candidates=\(candidateCount) · AXManualAccessibility=\(manualResult.rawValue) · AXEnhancedUserInterface=\(fallbackResult?.rawValue ?? -1) · attempt=\(attempt + 1)/\(focusRetryLimit)")
+                return
+            }
+            focusInputAfterActivation(processIdentifier: processIdentifier, attempt: attempt + 1,
+                                      didClickEditor: didClickEditor)
         }
-        return results
+    }
+
+    private static func recordFocusDiagnostic(_ message: String) {
+        UserDefaults.standard.set(message, forKey: focusDiagnosticDefaultsKey)
+        logger.error("mapped_app_focus \(message, privacy: .public)")
+        fputs("mapped_app_focus \(message)\n", stderr)
+    }
+
+    private static func focusAccessibilityElement(_ element: AXUIElement,
+                                                  applicationElement: AXUIElement) -> Bool {
+        if accessibilityElementIsFocused(element, applicationElement: applicationElement) {
+            return true
+        }
+        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(applicationElement,
+                                         kAXFocusedUIElementAttribute as CFString,
+                                         element)
+        if accessibilityElementIsFocused(element, applicationElement: applicationElement) {
+            return true
+        }
+        _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        return accessibilityElementIsFocused(element, applicationElement: applicationElement)
+    }
+
+    private static func accessibilityElementIsFocused(_ element: AXUIElement,
+                                                       applicationElement: AXUIElement) -> Bool {
+        var elementFocusedValue: CFTypeRef?
+        let elementFocused = AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString,
+                                                           &elementFocusedValue) == .success &&
+            (elementFocusedValue as? NSNumber)?.boolValue == true
+        var applicationFocusedValue: CFTypeRef?
+        let applicationFocusedMatches: Bool
+        if AXUIElementCopyAttributeValue(applicationElement, kAXFocusedUIElementAttribute as CFString,
+                                         &applicationFocusedValue) == .success,
+           let applicationFocusedValue {
+            applicationFocusedMatches = CFEqual(applicationFocusedValue, element)
+        } else {
+            applicationFocusedMatches = false
+        }
+        return elementFocused || applicationFocusedMatches
+    }
+
+    private static func clickAccessibilityElement(_ element: AXUIElement) -> Bool {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString,
+                                            &positionValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString,
+                                            &sizeValue) == .success,
+              let positionValue, let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return false }
+
+        let position = unsafeDowncast(positionValue, to: AXValue.self)
+        let size = unsafeDowncast(sizeValue, to: AXValue.self)
+        var origin = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &origin),
+              AXValueGetValue(size, .cgSize, &dimensions),
+              dimensions.width > 0, dimensions.height > 0,
+              let source = CGEventSource(stateID: .hidSystemState) else { return false }
+
+        let point = CGPoint(x: origin.x + dimensions.width / 2,
+                            y: origin.y + dimensions.height / 2)
+        guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: point, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                               mouseCursorPosition: point, mouseButton: .left) else { return false }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        return true
+    }
+
+    private static func applicationWindows(_ appElement: AXUIElement) -> [AXUIElement] {
+        var windows: [AXUIElement] = []
+        for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute, kAXWindowsAttribute] {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appElement, attribute as CFString, &value) == .success,
+                  let value else { continue }
+            let discovered: [AXUIElement]
+            if attribute == kAXWindowsAttribute as String {
+                discovered = value as? [AXUIElement] ?? []
+            } else if CFGetTypeID(value) == AXUIElementGetTypeID() {
+                discovered = [unsafeDowncast(value, to: AXUIElement.self)]
+            } else {
+                discovered = []
+            }
+            for window in discovered where !windows.contains(where: { CFEqual($0, window) }) {
+                windows.append(window)
+            }
+        }
+        return windows
+    }
+
+    private static func focusableTextInputs(under root: AXUIElement,
+                                            windowFrame: CGRect?) -> [(element: AXUIElement, role: String, score: Int)] {
+        var candidates: [(element: AXUIElement, role: String, score: Int)] = []
+        var stack: [(element: AXUIElement, context: String, depth: Int)] = [(root, semanticText(of: root), 0)]
+        var visited: [AXUIElement] = []
+        var inspected = 0
+        let childAttributes = ["AXChildrenInNavigationOrder", kAXVisibleChildrenAttribute,
+                               kAXContentsAttribute, kAXChildrenAttribute]
+
+        while let current = stack.popLast(), inspected < 5_000 {
+            if visited.contains(where: { CFEqual($0, current.element) }) { continue }
+            visited.append(current.element)
+            inspected += 1
+            guard current.depth < 30 else { continue }
+            if let role = stringAttribute(kAXRoleAttribute, of: current.element),
+               role == kAXTextAreaRole as String || role == kAXTextFieldRole as String {
+                var enabledValue: CFTypeRef?
+                let enabledResult = AXUIElementCopyAttributeValue(current.element,
+                                                                  kAXEnabledAttribute as CFString,
+                                                                  &enabledValue)
+                let enabled = enabledResult != .success || (enabledValue as? NSNumber)?.boolValue == true
+                if enabled {
+                    let ownText = semanticText(of: current.element)
+                    let candidateContext = [current.context, ownText].filter { !$0.isEmpty }.joined(separator: " ")
+                    let score = composerScore(role: role, semanticText: candidateContext,
+                                              frame: accessibilityFrame(of: current.element),
+                                              windowFrame: windowFrame)
+                    if score > 0 { candidates.append((current.element, role, score)) }
+                }
+            }
+
+            let nextContext = String(([current.context, semanticText(of: current.element)]
+                .filter { !$0.isEmpty }.joined(separator: " ")).suffix(512))
+            var children: [AXUIElement] = []
+            for attribute in childAttributes {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(current.element, attribute as CFString, &value) == .success,
+                      let childElements = value as? [AXUIElement] else { continue }
+                for child in childElements where !children.contains(where: { CFEqual($0, child) }) {
+                    children.append(child)
+                }
+            }
+            stack.append(contentsOf: children.reversed().map { ($0, nextContext, current.depth + 1) })
+        }
+        return candidates
+    }
+
+    private static func semanticText(of element: AXUIElement) -> String {
+        let attributes = [kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                          kAXHelpAttribute, kAXPlaceholderValueAttribute]
+        return attributes.compactMap { stringAttribute($0, of: element) }
+            .joined(separator: " ").lowercased()
+    }
+
+    private static func stringAttribute(_ attribute: String, of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    private static func accessibilityFrame(of element: AXUIElement) -> CGRect? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString,
+                                            &positionValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString,
+                                            &sizeValue) == .success,
+              let positionValue, let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        let position = unsafeDowncast(positionValue, to: AXValue.self)
+        let size = unsafeDowncast(sizeValue, to: AXValue.self)
+        var origin = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &origin), AXValueGetValue(size, .cgSize, &dimensions) else {
+            return nil
+        }
+        return CGRect(origin: origin, size: dimensions)
+    }
+
+    private static func composerScore(role: String, semanticText: String,
+                                      frame: CGRect?, windowFrame: CGRect?) -> Int {
+        let excluded = ["password", "api key", "token", "rename", "title", "code editor", "search",
+                        "密码", "密钥", "令牌", "重命名", "搜索"]
+        guard !excluded.contains(where: semanticText.contains) else { return 0 }
+        let strong = ["composer", "prompt-editor", "prompt_editor", "chat-input", "chat_input",
+                      "message-input", "message_input", "prompt input", "message input", "输入消息", "消息输入"]
+        let supporting = ["message", "prompt", "reply", "ask", "chat", "提问", "回复", "发送消息"]
+        var score = role == kAXTextAreaRole as String ? 30 : 0
+        if strong.contains(where: semanticText.contains) { score += 100 }
+        else if supporting.contains(where: semanticText.contains) { score += 60 }
+        if let frame {
+            if frame.width >= 280 { score += 20 }
+            if (24...500).contains(frame.height) { score += 10 }
+            if let windowFrame, windowFrame.width > 0, windowFrame.height > 0 {
+                if frame.width / windowFrame.width >= 0.45 { score += 25 }
+                let verticalPosition = (frame.midY - windowFrame.minY) / windowFrame.height
+                if verticalPosition >= 0.55 { score += 20 }
+                else if verticalPosition <= 0.25 { score -= 15 }
+            }
+        }
+        return score >= 60 ? score : 0
     }
 
     private static func postReturn() {

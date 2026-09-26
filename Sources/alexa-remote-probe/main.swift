@@ -43,6 +43,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var inputMonitoringGranted = false
     private var audioFrames = 0
     private var safetyTimer: Timer?
+    private var permissionRefreshTimer: Timer?
 
     isolated deinit {
         for buffer in buffers.values {
@@ -128,9 +129,14 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                  onClearMappings: { [weak self] in self?.clearButtonMappings() },
                                  onRemoveMapping: { [weak self] index in self?.removeButtonMapping(at: index) },
                                  onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
-                                 onRefreshPermissions: { [weak self] in self?.refreshPermissions() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
+            // Input Monitoring consent is exposed indirectly through IOHIDManagerOpen.
+            // Recheck while the app runs so returning from System Settings updates
+            // permission indicators without requiring a manual refresh.
+            permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshPermissions() }
+            }
             application.run()
         } else {
             RunLoop.current.run()
@@ -199,11 +205,16 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         if reportID != 0xF0, safeLength >= 3 {
             let usage = UInt16(bytes[1]) | (UInt16(bytes[2]) << 8)
             let hasButtonPayload = (1..<safeLength).contains { bytes[$0] != 0 }
-            if hasButtonPayload, !(reportID == 2 && usage == 0x0221) {
+            if hasButtonPayload {
                 let signature = String(format: "%02X:%02X:%02X", reportID, bytes[1], bytes[2])
-                spotlightSuppressor?.noteHardwareButton(signature: signature)
+                let remoteButton = RemoteButtonKey.resolve(reportID: reportID, usage: usage)
+                if !(reportID == 2 && usage == 0x0221) {
+                    spotlightSuppressor?.noteHardwareButton(signature: signature)
+                }
                 let payload = (0..<safeLength).map { String(format: "%02X", bytes[$0]) }.joined(separator: " ")
-                recordDetectedButton(signature: String(format: "report %02X · %@", reportID, payload), keyCode: nil)
+                recordDetectedButton(signature: String(format: "report %02X · %@", reportID, payload),
+                                     keyCode: nil,
+                                     remoteButton: remoteButton)
             }
         }
         if bridgeEnabled && (audioTest || recorder != nil), reportID == 2, safeLength >= 3 {
@@ -321,6 +332,9 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     }
 
     private func refreshPermissions() {
+        let previousInputMonitoring = inputMonitoringGranted
+        let previousAccessibility = AXIsProcessTrusted()
+        let previousNotice = permissionNotice
         if !inputMonitoringGranted {
             inputMonitoringGranted = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess
         }
@@ -329,17 +343,23 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         } else {
             permissionNotice = "需要辅助功能授权以执行按键映射和聚焦输入框"
         }
+        guard previousInputMonitoring != inputMonitoringGranted ||
+              previousAccessibility != AXIsProcessTrusted() ||
+              previousNotice != permissionNotice else { return }
         refreshMenu()
     }
 
-    private func recordDetectedButton(signature: String, keyCode: UInt16?) {
+    private func recordDetectedButton(signature: String, keyCode: UInt16?, remoteButton: RemoteButtonKey?) {
         let now = Date()
         if let last = detectedButtons.first,
            last.signature == signature,
            now.timeIntervalSince(last.detectedAt) < 1.0 { return }
-        detectedButtons.insert(DetectedRemoteButton(signature: signature, keyCode: keyCode, detectedAt: now), at: 0)
+        detectedButtons.insert(DetectedRemoteButton(signature: signature,
+                                                    keyCode: keyCode,
+                                                    remoteButton: remoteButton,
+                                                    detectedAt: now), at: 0)
         if detectedButtons.count > 12 { detectedButtons.removeLast(detectedButtons.count - 12) }
-        print("remote_button_detected signature=\(signature) keycode=\(keyCode.map(String.init) ?? "hid-only")")
+        print("remote_button_detected button=\(remoteButton?.rawValue ?? "unknown") signature=\(signature) keycode=\(keyCode.map(String.init) ?? "hid-only")")
         fflush(stdout)
         refreshMenu()
     }
@@ -410,6 +430,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     }
 
     private func stop() {
+        permissionRefreshTimer?.invalidate()
+        permissionRefreshTimer = nil
         if streaming { setAudio(enabled: false) }
         voiceInputTrigger?.cancel()
     }

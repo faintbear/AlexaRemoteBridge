@@ -1,5 +1,7 @@
 import AppKit
+import ApplicationServices
 import Foundation
+import IOKit.hidsystem
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -75,7 +77,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private let onClearMappings: () -> Void
     private let onRemoveMapping: (Int) -> Void
     private let onCancelLearning: () -> Void
-    private let onRefreshPermissions: () -> Void
     private let onQuit: () -> Void
     private var connected = false
     private var speaking = false
@@ -101,7 +102,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
          onClearMappings: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
          onCancelLearning: @escaping () -> Void,
-         onRefreshPermissions: @escaping () -> Void,
          onQuit: @escaping () -> Void) {
         self.mode = mode
         self.onToggle = onToggle
@@ -111,7 +111,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.onClearMappings = onClearMappings
         self.onRemoveMapping = onRemoveMapping
         self.onCancelLearning = onCancelLearning
-        self.onRefreshPermissions = onRefreshPermissions
         self.onQuit = onQuit
         super.init()
         statusItem.menu = menu
@@ -286,7 +285,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                 onLearnReturn: { [weak self] in self?.onLearnAction(.sendReturn) },
                 onRemoveMapping: onRemoveMapping,
                 onCancelLearning: onCancelLearning,
-                onRefreshPermissions: onRefreshPermissions,
                 onLanguageChange: { [weak self] in self?.refresh() }
             )
         }
@@ -317,13 +315,11 @@ private func localizedRuntimeMessage(_ message: String) -> String {
          onLearnReturn: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
          onCancelLearning: @escaping () -> Void,
-         onRefreshPermissions: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         let model = MappingDashboardModel(onChooseApp: onChooseApp,
                                           onLearnReturn: onLearnReturn,
                                           onRemoveMapping: onRemoveMapping,
                                           onCancelLearning: onCancelLearning,
-                                          onRefreshPermissions: onRefreshPermissions,
                                           onLanguageChange: onLanguageChange)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable],
@@ -358,6 +354,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     @Published private(set) var learning = false
     @Published private(set) var connected = false
     @Published private(set) var detectedButtons: [DetectedRemoteButton] = []
+    @Published private(set) var focusDiagnostic = AppLanguage.text("尚无聚焦记录", "No focus attempts yet")
     @Published private(set) var inputMonitoringGranted = false
     @Published private(set) var accessibilityGranted = false
     @Published var languageSelection = AppLanguage.choice.rawValue {
@@ -371,20 +368,17 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private let onLearnReturn: () -> Void
     private let onRemoveMapping: (Int) -> Void
     private let onCancelLearning: () -> Void
-    private let onRefreshPermissions: () -> Void
     private let onLanguageChange: () -> Void
 
     init(onChooseApp: @escaping (String) -> Void,
          onLearnReturn: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
          onCancelLearning: @escaping () -> Void,
-         onRefreshPermissions: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         self.onChooseApp = onChooseApp
         self.onLearnReturn = onLearnReturn
         self.onRemoveMapping = onRemoveMapping
         self.onCancelLearning = onCancelLearning
-        self.onRefreshPermissions = onRefreshPermissions
         self.onLanguageChange = onLanguageChange
     }
 
@@ -395,6 +389,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.learning = learning
         self.connected = connected
         self.detectedButtons = detectedButtons
+        self.focusDiagnostic = UserDefaults.standard.string(forKey: "lastMappedAppFocusDiagnostic")
+            ?? AppLanguage.text("尚无聚焦记录", "No focus attempts yet")
         self.inputMonitoringGranted = inputMonitoringGranted
         self.accessibilityGranted = accessibilityGranted
     }
@@ -415,25 +411,125 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     func learnReturn() { onLearnReturn() }
     func removeMapping(at index: Int) { onRemoveMapping(index) }
     func cancelLearning() { onCancelLearning() }
-    func refreshPermissions() { onRefreshPermissions() }
     func setLanguage(_ choice: AppLanguage.Choice) { languageSelection = choice.rawValue }
     func openInputMonitoring() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+        let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        if !granted {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+        }
     }
     func openAccessibility() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        if !AXIsProcessTrustedWithOptions(options) {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        }
     }
 }
 
 @MainActor private struct MappingDashboard: View {
     @ObservedObject var model: MappingDashboardModel
     private let blue = Color(red: 0.02, green: 0.62, blue: 0.86)
+    @State private var selectedSection: DashboardSection = .mapping
+
+    private enum DashboardSection: String, CaseIterable, Identifiable {
+        case mapping
+        case permissions
+
+        var id: String { rawValue }
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 34) {
-            RemoteIllustration()
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: 172)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.7))
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+
+            Group {
+                switch selectedSection {
+                case .mapping:
+                    mappingContent
+                case .permissions:
+                    permissionsContent
+                }
+            }
+            .padding(26)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(minWidth: 1080, minHeight: 650)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 9) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(blue)
+                Text("AlexaRemoteBridge")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 12)
+
+            VStack(spacing: 5) {
+                sidebarItem(.mapping,
+                            title: AppLanguage.text("按键映射", "Button Mapping"),
+                            systemImage: "keyboard")
+                sidebarItem(.permissions,
+                            title: AppLanguage.text("权限", "Permissions"),
+                            systemImage: "lock.shield")
+            }
+
+            Spacer()
+
+            Picker(AppLanguage.text("界面语言", "Language"), selection: $model.languageSelection) {
+                ForEach(AppLanguage.Choice.allCases) { choice in
+                    Text(choice.menuTitle).tag(choice.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 8)
+    }
+
+    private func sidebarItem(_ section: DashboardSection, title: String, systemImage: String) -> some View {
+        let selected = selectedSection == section
+        return Button {
+            selectedSection = section
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 20)
+                Text(title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(selected ? blue : Color.primary.opacity(0.78))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? blue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var mappingContent: some View {
+        HStack(alignment: .top, spacing: 24) {
+            RemoteIllustration(activeButton: model.detectedButtons.first?.remoteButton)
                 .frame(width: 205, height: 540)
-                .frame(width: 240)
+                .frame(width: 220)
                 .frame(maxHeight: .infinity, alignment: .center)
 
             VStack(alignment: .leading, spacing: 22) {
@@ -441,13 +537,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                     statusPill(AppLanguage.text("遥控器", "Remote"), value: model.connected ? AppLanguage.text("已连接 · 按任意普通键检测", "Connected · Press any regular button to detect") : AppLanguage.text("未连接", "Disconnected"), systemImage: "dot.radiowaves.left.and.right")
                     statusPill(AppLanguage.text("映射状态", "Mapping"), value: model.learning ? AppLanguage.text("正在学习…", "Learning…") : AppLanguage.text("已保存 \(model.mappings.count) 个", "\(model.mappings.count) saved"), systemImage: "checkmark.circle")
                     Spacer()
-                    Picker(AppLanguage.text("界面语言", "Language"), selection: $model.languageSelection) {
-                        ForEach(AppLanguage.Choice.allCases) { choice in
-                            Text(choice.menuTitle).tag(choice.rawValue)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 150)
                     Button { model.learning ? model.cancelLearning() : model.chooseApp() } label: {
                         Label(model.learning ? AppLanguage.text("取消学习", "Cancel Learning") : AppLanguage.text("添加按键", "Add Button"),
                               systemImage: model.learning ? "xmark" : "plus")
@@ -456,30 +545,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(blue)
-                }
-
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack {
-                        Text(AppLanguage.text("权限设置", "Permissions")).font(.system(size: 14, weight: .semibold))
-                        Spacer()
-                        Button(AppLanguage.text("刷新授权状态", "Refresh Status")) { model.refreshPermissions() }
-                            .buttonStyle(.borderless)
-                    }
-                    HStack(spacing: 12) {
-                        permissionCard(title: AppLanguage.text("输入监控", "Input Monitoring"),
-                                       detail: AppLanguage.text("读取遥控器按键", "Read remote button presses"),
-                                       granted: model.inputMonitoringGranted,
-                                       actionTitle: AppLanguage.text("打开设置…", "Open Settings…"),
-                                       action: model.openInputMonitoring)
-                        permissionCard(title: AppLanguage.text("辅助功能", "Accessibility"),
-                                       detail: AppLanguage.text("按键映射与聚焦输入框", "Button mapping and input focus"),
-                                       granted: model.accessibilityGranted,
-                                       actionTitle: AppLanguage.text("打开设置…", "Open Settings…"),
-                                       action: model.openAccessibility)
-                    }
-                    Text(AppLanguage.text("在系统设置中允许 AlexaRemoteBridge；授权后点“刷新授权状态”。输入监控刚获准时若仍未连接，请完全退出并重新打开 App。", "Allow AlexaRemoteBridge in System Settings, then click “Refresh Status”. If the remote is still disconnected after granting Input Monitoring, fully quit and reopen the app."))
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack {
@@ -499,7 +564,9 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                         HStack(spacing: 8) {
                             ForEach(model.detectedButtons.prefix(4)) { button in
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(button.keyCode.map(Self.keyName) ?? AppLanguage.text("HID 按键报告", "HID Button Report"))
+                                    Text(button.remoteButton.map(Self.remoteButtonName)
+                                         ?? button.keyCode.map(Self.keyName)
+                                         ?? AppLanguage.text("HID 按键报告", "HID Button Report"))
                                         .font(.system(size: 12, weight: .semibold))
                                     Text(button.keyCode.map { AppLanguage.text("键码 \($0) · ", "Keycode \($0) · ") } ?? "") + Text(button.signature)
                                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
@@ -510,6 +577,26 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                         }
                     }
                 }
+
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(AppLanguage.text("最近输入框聚焦诊断", "Last Input Focus Diagnostic"))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(model.focusDiagnostic)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 4)
+                    Button(AppLanguage.text("复制", "Copy")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.focusDiagnostic, forType: .string)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
 
                 ScrollView {
                     if model.mappings.isEmpty {
@@ -532,9 +619,58 @@ private func localizedRuntimeMessage(_ message: String) -> String {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(28)
-        .frame(minWidth: 980, minHeight: 650)
-        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var permissionsContent: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(AppLanguage.text("权限", "Permissions"))
+                        .font(.system(size: 25, weight: .semibold))
+                    Text(AppLanguage.text("在这里集中查看并完成 AlexaRemoteBridge 所需的系统授权。", "Review and grant the system permissions required by AlexaRemoteBridge."))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label(model.inputMonitoringGranted && model.accessibilityGranted
+                      ? AppLanguage.text("全部就绪", "All Set")
+                      : AppLanguage.text("需要授权", "Action Needed"),
+                      systemImage: model.inputMonitoringGranted && model.accessibilityGranted
+                      ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(model.inputMonitoringGranted && model.accessibilityGranted ? .green : .orange)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                permissionCard(title: AppLanguage.text("输入监控", "Input Monitoring"),
+                               detail: AppLanguage.text("读取 Alexa 遥控器的实体按键。", "Read physical button presses from the Alexa remote."),
+                               granted: model.inputMonitoringGranted,
+                               actionTitle: model.inputMonitoringGranted ? AppLanguage.text("管理…", "Manage…") : AppLanguage.text("前往授权…", "Grant Access…"),
+                               action: model.openInputMonitoring)
+                permissionCard(title: AppLanguage.text("辅助功能", "Accessibility"),
+                               detail: AppLanguage.text("触发语音输入快捷键、执行按键映射并尝试聚焦输入框。", "Trigger voice-input shortcuts, run button mappings, and attempt to focus text fields."),
+                               granted: model.accessibilityGranted,
+                               actionTitle: model.accessibilityGranted ? AppLanguage.text("管理…", "Manage…") : AppLanguage.text("前往授权…", "Grant Access…"),
+                               action: model.openAccessibility)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label(AppLanguage.text("授权后会自动确认", "Automatic status check"), systemImage: "arrow.clockwise.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(AppLanguage.text("点对应按钮打开系统设置并允许 AlexaRemoteBridge；完成后切回 App，状态会自动更新为绿色对勾。若更换了 App 位置或重新下载了新构建，macOS 可能要求再次授权。", "Use the button for each permission to open System Settings and allow AlexaRemoteBridge. Return to the app and its status will update automatically. macOS may ask again after the app is moved or a new build is downloaded."))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+
+            Spacer(minLength: 0)
+        }
     }
 
     private func statusPill(_ title: String, value: String, systemImage: String) -> some View {
@@ -571,7 +707,10 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 
     private func mappingCard(_ mapping: RemoteButtonMapping, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let buttonTitle = RemoteButtonKey.resolve(signature: mapping.signature)
+            .map(Self.remoteButtonName)
+            ?? AppLanguage.text("遥控器键 · \(mapping.keyCode)", "Remote Button · \(mapping.keyCode)")
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: mapping.action.isApp ? "app.fill" : "return")
                     .font(.system(size: 17, weight: .semibold))
@@ -579,7 +718,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                     .frame(width: 38, height: 38)
                     .background(mapping.action.isApp ? blue : Color(nsColor: .darkGray), in: Circle())
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(AppLanguage.text("遥控器键 · \(mapping.keyCode)", "Remote Button · \(mapping.keyCode)")).font(.system(size: 14, weight: .semibold))
+                    Text(buttonTitle).font(.system(size: 14, weight: .semibold))
                     Text(mapping.signature).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -625,6 +764,32 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         default: return AppLanguage.text("按键", "Button")
         }
     }
+
+    private static func remoteButtonName(_ button: RemoteButtonKey) -> String {
+        switch button {
+        case .power: return AppLanguage.text("电源", "Power")
+        case .microphone: return AppLanguage.text("麦克风", "Microphone")
+        case .up: return AppLanguage.text("方向上", "Up")
+        case .left: return AppLanguage.text("方向左", "Left")
+        case .select: return AppLanguage.text("确认", "Select")
+        case .right: return AppLanguage.text("方向右", "Right")
+        case .down: return AppLanguage.text("方向下", "Down")
+        case .back: return AppLanguage.text("返回", "Back")
+        case .home: return AppLanguage.text("主页", "Home")
+        case .menu: return AppLanguage.text("菜单", "Menu")
+        case .rewind: return AppLanguage.text("快退", "Rewind")
+        case .playPause: return AppLanguage.text("播放／暂停", "Play/Pause")
+        case .fastForward: return AppLanguage.text("快进", "Fast Forward")
+        case .mute: return AppLanguage.text("静音", "Mute")
+        case .volumeUp: return AppLanguage.text("音量加", "Volume Up")
+        case .tv: return "TV"
+        case .volumeDown: return AppLanguage.text("音量减", "Volume Down")
+        case .prime: return "Prime"
+        case .netflix: return "Netflix"
+        case .disney: return "Disney+"
+        case .hulu: return "Hulu"
+        }
+    }
 }
 
 private extension RemoteButtonAction {
@@ -635,52 +800,61 @@ private extension RemoteButtonAction {
 }
 
 private struct RemoteIllustration: View {
+    let activeButton: RemoteButtonKey?
+
     private let button = Color(red: 0.13, green: 0.14, blue: 0.17)
+    private let highlight = Color(red: 1.0, green: 0.72, blue: 0.18)
 
     var body: some View {
         VStack(spacing: 10) {
             HStack {
-                keycap("power", size: 28)
+                keycap(.power, symbol: "power", size: 28)
                 Spacer()
             }
             .padding(.horizontal, 22)
             .padding(.top, 3)
             Circle()
-                .fill(Color(red: 0.03, green: 0.64, blue: 0.88))
+                .fill(activeButton == .microphone ? highlight : Color(red: 0.03, green: 0.64, blue: 0.88))
                 .overlay(Image(systemName: "mic.fill").font(.system(size: 15)).foregroundStyle(.white))
                 .frame(width: 38, height: 38)
+                .overlay(Circle().stroke(activeButton == .microphone ? .white : .clear, lineWidth: 2))
+                .shadow(color: activeButton == .microphone ? highlight.opacity(0.75) : .clear, radius: 9)
                 .padding(.bottom, 2)
             ZStack {
                 Circle().fill(Color.black.opacity(0.68)).frame(width: 126, height: 126)
-                Circle().fill(Color(red: 0.13, green: 0.14, blue: 0.17)).frame(width: 57, height: 57)
-                Image(systemName: "chevron.up").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.8)).offset(y: -48)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.8)).offset(y: 48)
-                Image(systemName: "chevron.left").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.8)).offset(x: -48)
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.8)).offset(x: 48)
+                Circle()
+                    .fill(activeButton == .select ? highlight : Color(red: 0.13, green: 0.14, blue: 0.17))
+                    .frame(width: 57, height: 57)
+                    .overlay(Circle().stroke(activeButton == .select ? .white : .clear, lineWidth: 2))
+                    .shadow(color: activeButton == .select ? highlight.opacity(0.7) : .clear, radius: 8)
+                direction(.up, symbol: "chevron.up").offset(y: -48)
+                direction(.down, symbol: "chevron.down").offset(y: 48)
+                direction(.left, symbol: "chevron.left").offset(x: -48)
+                direction(.right, symbol: "chevron.right").offset(x: 48)
             }
             HStack(spacing: 13) {
-                keycap("arrow.uturn.backward", size: 29)
-                keycap("house.fill", size: 29)
-                keycap("line.3.horizontal", size: 29)
+                keycap(.back, symbol: "arrow.uturn.backward", size: 29)
+                keycap(.home, symbol: "house.fill", size: 29)
+                keycap(.menu, symbol: "line.3.horizontal", size: 29)
             }
             HStack(spacing: 13) {
-                keycap("backward.end.fill", size: 29)
-                keycap("playpause.fill", size: 29)
-                keycap("forward.end.fill", size: 29)
+                keycap(.rewind, symbol: "backward.end.fill", size: 29)
+                keycap(.playPause, symbol: "playpause.fill", size: 29)
+                keycap(.fastForward, symbol: "forward.end.fill", size: 29)
             }
             HStack(spacing: 13) {
-                keycap("speaker.slash.fill", size: 29)
+                keycap(.mute, symbol: "speaker.slash.fill", size: 29)
                 volumeRocker
-                keycap("tv", size: 29)
+                keycap(.tv, symbol: "tv", size: 29)
             }
             VStack(spacing: 6) {
                 HStack(spacing: 7) {
-                    capsuleKey("prime", color: Color(red: 0.04, green: 0.45, blue: 0.91))
-                    capsuleKey("NETFLIX", color: Color(red: 0.91, green: 0.08, blue: 0.10))
+                    capsuleKey(.prime, title: "prime", color: Color(red: 0.04, green: 0.45, blue: 0.91))
+                    capsuleKey(.netflix, title: "NETFLIX", color: Color(red: 0.91, green: 0.08, blue: 0.10))
                 }
                 HStack(spacing: 7) {
-                    capsuleKey("Disney+", color: Color(red: 0.12, green: 0.19, blue: 0.75))
-                    capsuleKey("hulu", color: Color(red: 0.02, green: 0.73, blue: 0.42), foreground: .black)
+                    capsuleKey(.disney, title: "Disney+", color: Color(red: 0.12, green: 0.19, blue: 0.75))
+                    capsuleKey(.hulu, title: "hulu", color: Color(red: 0.02, green: 0.73, blue: 0.42), foreground: .black)
                 }
             }
             .padding(.top, 2)
@@ -690,27 +864,52 @@ private struct RemoteIllustration: View {
         .background(LinearGradient(colors: [Color(white: 0.15), Color(white: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 48))
         .overlay(RoundedRectangle(cornerRadius: 48).stroke(.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
+        .animation(.easeOut(duration: 0.15), value: activeButton)
     }
 
-    private func keycap(_ symbol: String, size: CGFloat) -> some View {
+    private func keycap(_ key: RemoteButtonKey, symbol: String, size: CGFloat) -> some View {
         Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
-            .frame(width: size, height: size).background(button, in: Circle())
+            .frame(width: size, height: size)
+            .background(activeButton == key ? highlight : button, in: Circle())
+            .overlay(Circle().stroke(activeButton == key ? .white : .clear, lineWidth: 1.5))
+            .shadow(color: activeButton == key ? highlight.opacity(0.75) : .clear, radius: 8)
+    }
+
+    private func direction(_ key: RemoteButtonKey, symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 22, height: 22)
+            .background(activeButton == key ? highlight : .clear, in: Circle())
+            .overlay(Circle().stroke(activeButton == key ? .white : .clear, lineWidth: 1.5))
+            .shadow(color: activeButton == key ? highlight.opacity(0.75) : .clear, radius: 8)
     }
 
     private var volumeRocker: some View {
         VStack(spacing: 0) {
-            Image(systemName: "plus").frame(maxWidth: .infinity, maxHeight: .infinity)
+            volumeButton(.volumeUp, symbol: "plus")
             Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
-            Image(systemName: "minus").frame(maxWidth: .infinity, maxHeight: .infinity)
+            volumeButton(.volumeDown, symbol: "minus")
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.white.opacity(0.9))
         .frame(width: 30, height: 55)
         .background(button, in: Capsule())
+        .overlay(Capsule().stroke(activeButton == .volumeUp || activeButton == .volumeDown ? highlight : .clear, lineWidth: 2))
+        .shadow(color: activeButton == .volumeUp || activeButton == .volumeDown ? highlight.opacity(0.65) : .clear, radius: 7)
     }
 
-    private func capsuleKey(_ title: String, color: Color, foreground: Color = .white) -> some View {
+    private func volumeButton(_ key: RemoteButtonKey, symbol: String) -> some View {
+        Image(systemName: symbol)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(activeButton == key ? highlight : .clear, in: Capsule())
+    }
+
+    private func capsuleKey(_ key: RemoteButtonKey, title: String, color: Color, foreground: Color = .white) -> some View {
         Text(title).font(.system(size: 9, weight: .bold)).foregroundStyle(foreground)
-            .frame(width: 49, height: 23).background(color.gradient, in: Capsule())
+            .frame(width: 49, height: 23)
+            .background(color.gradient, in: Capsule())
+            .overlay(Capsule().stroke(activeButton == key ? highlight : .clear, lineWidth: 3))
+            .shadow(color: activeButton == key ? highlight.opacity(0.8) : .clear, radius: 8)
     }
 }
