@@ -56,6 +56,10 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             if recorder == nil { recorder = try OpusRecorder(path: nil) }
             let voiceMode = try Self.selectedVoiceMode()
             voiceInputTrigger = try VoiceInputTrigger(mode: voiceMode)
+            if appMode && !AXIsProcessTrusted() {
+                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
+            }
             do {
                 spotlightSuppressor = try SpotlightSuppressor()
                 loadReturnMappings()
@@ -104,6 +108,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         if liveMode {
             print("Audio is sent to BlackHole 2ch; select BlackHole 2ch as the microphone in the receiving app.")
             print("voice_key_mode=\(voiceInputTrigger?.mode.rawValue ?? "none")")
+            print("accessibility_trusted=\(AXIsProcessTrusted()) spotlight_suppressor=\(spotlightSuppressor != nil)")
         }
         print("Press ordinary buttons, then hold the Alexa button and speak. Press Control-C to stop.")
         if appMode {
@@ -189,6 +194,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             let usage = UInt16(bytes[1]) | (UInt16(bytes[2]) << 8)
             if usage == 0x0221, !micButtonDown {
                 micButtonDown = true
+                print("\(timestamp()) remote_mic_down suppressor_ready=\(spotlightSuppressor != nil)")
+                fflush(stdout)
                 spotlightSuppressor?.noteMicPress()
                 if !streaming { setAudio(enabled: true) }
             }
