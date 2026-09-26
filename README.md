@@ -1,53 +1,51 @@
 # AlexaRemoteBridge
 
-Product scope and acceptance criteria: [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md).
+AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remote（第 3 代，型号 L5B83G）成为 Mac 上的无线语音输入遥控器。按住遥控器的麦克风键即可说话；也可以把遥控器上的其他按键映射为打开常用 App 或发送 Return。
 
-An experimental macOS bridge for the original Amazon Alexa Voice Remote (3rd Gen), model `L5B83G`.
+项目仍处于实验阶段，目前针对 Alexa Voice Remote 3rd Gen 开发和测试。
 
-The current milestone is working HID microphone activation, local Opus decoding, and live output to BlackHole 2ch. On the tested Mac, BlackHole's input meter moved in sync with speech from the remote, and the live bridge prevented the mic key from opening Spotlight during a held press.
+## 功能
 
-Identity:
+- 将遥控器麦克风的实时音频送入 BlackHole 2ch 等虚拟音频输入设备。
+- 按住麦克风键时，可触发 Fn 或 Option，配合豆包等已有语音输入应用使用。
+- 在按键映射页面识别按键、显示最近按键并高亮遥控器示意图上的对应位置。
+- 将可识别的遥控器按键映射为打开/切换到指定 App，或发送 Return。
+- 在应用内查看输入监控、辅助功能权限状态，并提供跳转到 macOS 系统设置的入口。
+- 提供简体中文和英文界面。
 
-- BLE product name: `AR`
-- Vendor ID: `0x0171`
-- Product ID: `0x041E`
+AlexaRemoteBridge 负责传输音频和按键操作，不包含语音识别。语音转文字由你选择的输入法或听写应用完成。
 
-The HID probe opens the matching device without exclusive access by default. It does not send feature or output reports and does not save full microphone packets. Output contains only the report ID, packet length, and an eight-byte prefix for protocol classification.
+## 开始使用
 
-Build and run:
+1. 在 macOS 蓝牙设置中配对遥控器，并启动 AlexaRemoteBridge。
+2. 安装 [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)；如果安装器提示，请重启 Mac。然后在豆包或其他语音输入应用中选择 BlackHole 2ch 作为麦克风输入。
+3. 按应用提示授予“输入监控”和“辅助功能”权限。权限页面会显示各项授权状态。
+4. 在按键映射页面设置所需操作。按住遥控器麦克风键说话，松开后由语音输入应用完成识别。
+
+应用运行在菜单栏。选择“打开主界面”可打开按键映射和权限页面；麦克风触发方式可从菜单栏切换。
+
+## 从源码构建
+
+需要 macOS、Swift 和 [Opus](https://opus-codec.org/)：
 
 ```bash
 brew install opus
-swift build --disable-keychain
-swift run --disable-keychain alexa-remote-probe
-swift run --disable-keychain alexa-gatt-probe
+zsh scripts/build-app.sh
 ```
 
-If macOS blocks HID access, enable Input Monitoring for the terminal application and restart it.
+构建完成后打开 `dist/AlexaRemoteBridge.app`。BlackHole 是可选的独立虚拟音频驱动，但要把遥控器音频送入其他应用时需要配置兼容的虚拟输入设备。
 
-To count microphone frames without saving speech, run `swift run --disable-keychain alexa-remote-probe --audio-test`, then hold and release the mic button. To decode speech into a local 16 kHz mono WAV, run `swift run --disable-keychain alexa-remote-probe --record-wav ./voice-test.wav`. WAV files are ignored by Git. Both modes send only HID output report `F2 01` after button-down and `F2 00` after button-up, with a ten-second safety stop. The command and frame format are documented in [tvbox's Fire TV remote implementation](https://github.com/Andy1210/tvbox/blob/main/docs/voice-satellite.md#how-the-remotes-microphone-works).
+## 当前限制
 
-For live input, install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole) with `brew install blackhole-2ch` and reboot if the installer asks. Grant Accessibility and Input Monitoring permission to the terminal or packaged app. Then run `swift run --disable-keychain alexa-remote-probe --live` and choose `BlackHole 2ch` as the microphone inside the receiving app. The bridge selects BlackHole for its own output without changing the Mac's system-wide audio output. While the AR mic button is held, it consumes only macOS keycode `177`, including repeats and the final release, so Spotlight stays closed. If Accessibility permission is missing, audio still runs but Spotlight may appear. Live mode has a 30-second safety stop if no release arrives. Keep other audio applications from sending sound to BlackHole, or their audio will be mixed into the same virtual input.
+- 目前仅针对 Alexa Voice Remote（第 3 代，L5B83G）实现和验证，按键映射仅适用于 macOS 能上报给应用的按键。
+- 自动聚焦取决于目标 App 是否向 macOS 暴露可访问的文本输入框；未能聚焦时，请手动点击输入框。
+- 本地构建版本为临时签名，尚未公证。重新构建、移动应用或系统权限状态变化后，macOS 可能要求重新授予权限。
+- 音频识别和语音数据的处理方式由所使用的语音输入应用决定。
 
-For an existing dictation app, add `--voice-key fn-hold`, `--voice-key fn-toggle`, `--voice-key left-option-hold`, or `--voice-key right-option-hold` to `--live`. These shortcuts are emitted only while the Alexa mic session is active. The default `--live` mode emits no shortcut. The menu-bar app defaults to left Option hold for the user's Doubao setup and lets you change the mode from its AR menu. In the dictation app, choose `BlackHole 2ch` as the input device. The dictation app, not this bridge, converts speech to text, so its privacy policy applies.
+## 隐私
 
-To build a local menu-bar app, run `zsh scripts/build-app.sh`, then open `dist/AlexaRemoteBridge.app`. The interface supports Simplified Chinese and English. Choose “System Default”, “简体中文”, or “English” from the language picker in the dashboard or the AR menu; the selection is saved locally and applied immediately. Grant the app Input Monitoring and Accessibility permissions in System Settings, quit it fully, and reopen it. The AR menu shows connection and microphone status, a bridge pause switch, voice-key mode selection, and button-learning actions. “Button Mapping Settings” opens a mapping dashboard with a drawn remote, connection status, recent detections from raw HID button reports, saved mappings, and add/remove actions. The microphone/voice report and audio frames are excluded from the ordinary-button list. The physical remote still needs on-device testing to confirm that every button report arrives and which raw report belongs to each printed button label. To bind an app, choose the `.app` in the picker, then press the remote button when prompted; the first press is consumed while learning. Later presses suppress the original key action and run the selected action. An already-running app is unhidden and activated; a non-running app is launched. After activation, the bridge tries to focus an enabled text input through macOS Accessibility; if the target app does not expose one, a failure diagnostic is logged. Mappings are stored locally. This currently supports buttons that macOS exposes as keyboard events for actions. Packaging is ad-hoc signed for local testing, not a notarized release.
+音频在使用期间实时输出到本机的虚拟音频设备；应用不会默认保存录音或转写文本。语音输入应用是否上传音频或识别结果，请参阅该应用自己的隐私说明。
 
-## Findings on the tested remote
+## 开发资料
 
-- A directional button produces HID report `01 50 00 00`, followed by a zeroed release report.
-- The microphone button produces HID report `02 21 02 00 00`, followed by a zeroed release report. This is Consumer Page `AC Search` (`0x0221`), which macOS interprets as Spotlight. It is a button event, not microphone audio.
-- Sending output report `F2 01` immediately after the mic press started a stream of input report `F0` frames (81 bytes including report ID). One measured press produced 286 frames in about six seconds; `F2 00` after release stopped the stream. This matches the 80-byte, 20 ms Opus CELT frames documented by tvbox.
-- The device exposes a proprietary GATT service `5DE20000-5E8D-11E6-8B77-86F30CA893D3` with a writable characteristic `5DE24A17-...` and notifiable characteristics `5DD24A18-...` and `5DE24A19-...`. The GATT probe subscribes and reads only; it sends no proprietary commands.
-- A device-specific `hidutil` mapping did not take effect on the tested Mac. A system-wide mapping also did not suppress the Spotlight popup. Neither is presented as a working fix.
-- Exclusive HID capture returned `kIOReturnNotPrivileged` on the tested Mac, even after Input Monitoring permission. The optional `--seize` mode is diagnostic only and may fail for the same reason elsewhere.
-
-The `FE151500-...` service may be related to firmware update and is deliberately untouched. The mic stream and Spotlight shortcut are separate event paths.
-
-The `alexa-event-probe` tool logs only key-event metadata within 300 ms of an AR mic press. It identified macOS keycode `177` immediately after the HID `0x0221` mic report. Its `--suppress` mode confirmed that a short press can be blocked with Accessibility permission. The live bridge uses a longer button-held window to also block key repeats and release; a fixed 300 ms window failed for a held press.
-
-The first local WAV test, spoken close to the remote, had 440 clipped samples across 24 frames. Repeating at roughly 10–15 cm from the microphone produced zero clipped samples (peak 5279), supporting near-field input overload as the cause of the reported popping. A fivefold gain applied to that distant sample was heard clearly without popping. The bridge now applies up to 5× gain to decoded samples, reducing gain on loud frames to avoid introducing new clipping. Speak at a normal level from roughly 10–15 cm; software gain cannot restore a mic signal already clipped before transmission. The test WAV files are local and ignored by Git.
-
-## Planned settings UI
-
-A device-specific button-mapping screen is planned: remote diagram, connected/microphone status, profiles, button learning, short- and long-press actions, and a safe reset. The mic key should default to push-to-talk. No remapping UI is implemented yet.
+- [产品需求与验收说明](PRODUCT_REQUIREMENTS.md)
