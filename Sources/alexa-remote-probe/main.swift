@@ -37,6 +37,9 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var pendingMicRelease: Timer?
     private var bridgeEnabled = true
     private var learningAction = false
+    private var pendingLearningAction: RemoteButtonAction?
+    private var hidOnlyExecutionTimes: [String: TimeInterval] = [:]
+    private let hidOnlyDebounceInterval: TimeInterval = 0.35
     private var buttonMappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
     private var permissionNotice: String?
@@ -68,9 +71,10 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                 let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
             }
+            loadReturnMappings()
             do {
                 spotlightSuppressor = try SpotlightSuppressor()
-                loadReturnMappings()
+                spotlightSuppressor?.setMappings(buttonMappings)
                 print("spotlight_suppression_ready scope=AR_mic_hold_plus_300ms")
             } catch {
                 permissionNotice = "请在辅助功能设置中授权 AlexaRemoteBridge"
@@ -209,7 +213,23 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             if hasButtonPayload {
                 let signature = String(format: "%02X:%02X:%02X", reportID, bytes[1], bytes[2])
                 let remoteButton = RemoteButtonKey.resolve(reportID: reportID, usage: usage)
-                if !(reportID == 2 && usage == 0x0221) {
+                if remoteButton?.isHIDOnly == true {
+                    if learningAction {
+                        if let action = pendingLearningAction {
+                            finishButtonLearning(signature: signature, keyCode: nil, action: action)
+                        }
+                    } else if bridgeEnabled,
+                              let mapping = buttonMappings.first(where: {
+                                  $0.signature == signature && $0.keyCode == nil
+                              }) {
+                        let now = Date().timeIntervalSince1970
+                        let lastExecution = hidOnlyExecutionTimes[signature] ?? 0
+                        if now - lastExecution >= hidOnlyDebounceInterval {
+                            hidOnlyExecutionTimes[signature] = now
+                            SpotlightSuppressor.perform(mapping.action)
+                        }
+                    }
+                } else if !(reportID == 2 && usage == 0x0221) {
                     spotlightSuppressor?.noteHardwareButton(signature: signature)
                 }
                 let payload = (0..<safeLength).map { String(format: "%02X", bytes[$0]) }.joined(separator: " ")
@@ -385,28 +405,40 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
            let decoded = try? JSONDecoder().decode([RemoteButtonMapping].self, from: data) {
             buttonMappings = decoded
         }
-        spotlightSuppressor?.setMappings(buttonMappings)
     }
 
     private func beginButtonLearning(action: RemoteButtonAction) {
         learningAction = true
+        pendingLearningAction = action
         spotlightSuppressor?.beginButtonLearning(action: action) { [weak self] signature, keyCode, action in
             guard let self else { return }
-            self.learningAction = false
-            self.buttonMappings.removeAll { $0.keyCode == keyCode || $0.signature == signature }
-            self.buttonMappings.append(RemoteButtonMapping(signature: signature, keyCode: keyCode, action: action))
-            if let data = try? JSONEncoder().encode(self.buttonMappings) {
-                UserDefaults.standard.set(data, forKey: "remoteButtonMappings")
-            }
-            self.spotlightSuppressor?.setMappings(self.buttonMappings)
-            self.refreshMenu()
-            print("remote_button_mapped signature=\(signature) keycode=\(keyCode) action=\(action)")
+            self.finishButtonLearning(signature: signature, keyCode: keyCode, action: action)
         }
         refreshMenu()
     }
 
+    private func finishButtonLearning(signature: String, keyCode: UInt16?, action: RemoteButtonAction) {
+        learningAction = false
+        pendingLearningAction = nil
+        spotlightSuppressor?.cancelReturnButtonLearning()
+        buttonMappings.removeAll { mapping in
+            mapping.signature == signature || (keyCode != nil && mapping.keyCode == keyCode)
+        }
+        buttonMappings.append(RemoteButtonMapping(signature: signature, keyCode: keyCode, action: action))
+        if let data = try? JSONEncoder().encode(buttonMappings) {
+            UserDefaults.standard.set(data, forKey: "remoteButtonMappings")
+        }
+        spotlightSuppressor?.setMappings(buttonMappings)
+        if keyCode == nil {
+            hidOnlyExecutionTimes[signature] = Date().timeIntervalSince1970
+        }
+        refreshMenu()
+        print("remote_button_mapped signature=\(signature) keycode=\(keyCode.map(String.init) ?? "hid-only") action=\(action)")
+    }
+
     private func clearButtonMappings() {
         learningAction = false
+        pendingLearningAction = nil
         buttonMappings.removeAll()
         spotlightSuppressor?.cancelReturnButtonLearning()
         spotlightSuppressor?.setMappings([])
@@ -426,6 +458,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
 
     private func cancelButtonLearning() {
         learningAction = false
+        pendingLearningAction = nil
         spotlightSuppressor?.cancelReturnButtonLearning()
         refreshMenu()
     }

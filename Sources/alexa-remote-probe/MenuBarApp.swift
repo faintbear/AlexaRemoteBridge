@@ -745,7 +745,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private func mappingCard(_ mapping: RemoteButtonMapping, index: Int) -> some View {
         let buttonTitle = RemoteButtonKey.resolve(signature: mapping.signature)
             .map(Self.remoteButtonName)
-            ?? AppLanguage.text("遥控器键 · \(mapping.keyCode)", "Remote Button · \(mapping.keyCode)")
+            ?? mapping.keyCode.map { AppLanguage.text("遥控器键 · \($0)", "Remote Button · \($0)") }
+            ?? AppLanguage.text("HID 按键", "HID Button")
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: mapping.action.isApp ? "app.fill" : "return")
