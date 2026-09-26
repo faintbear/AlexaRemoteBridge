@@ -43,7 +43,9 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var buttonMappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
     private var permissionNotice: String?
-    private var inputMonitoringGranted = false
+    private var inputMonitoringStatus: PermissionStatus = .notGranted
+    private var inputMonitoringManagerOpened = false
+    private var accessibilityStatus: PermissionStatus = .notGranted
     private var audioFrames = 0
     private var safetyTimer: Timer?
     private var permissionRefreshTimer: Timer?
@@ -72,17 +74,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                 _ = AXIsProcessTrustedWithOptions(options)
             }
             loadReturnMappings()
-            do {
-                spotlightSuppressor = try SpotlightSuppressor()
-                spotlightSuppressor?.setMappings(buttonMappings)
-                print("spotlight_suppression_ready scope=AR_mic_hold_plus_300ms")
-            } catch {
-                permissionNotice = "请在辅助功能设置中授权 AlexaRemoteBridge"
-                fputs("warning: Spotlight suppression needs Accessibility permission; live audio will still run\n", stderr)
-            }
-            if !AXIsProcessTrusted() {
-                permissionNotice = "左 Option 触发和按键映射需要辅助功能授权"
-            }
+            rebuildSpotlightSuppressorIfNeeded()
         }
         let match: [String: Any] = [
             kIOHIDVendorIDKey as String: amazonVendorID,
@@ -107,10 +99,9 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         let options = seize ? IOOptionBits(kIOHIDOptionsTypeSeizeDevice) : IOOptionBits(kIOHIDOptionsTypeNone)
         let result = IOHIDManagerOpen(manager, options)
-        inputMonitoringGranted = result == kIOReturnSuccess
-        if result != kIOReturnSuccess, appMode {
-            permissionNotice = "请在输入监控设置中授权 AlexaRemoteBridge，然后重启应用"
-        } else if result != kIOReturnSuccess {
+        inputMonitoringManagerOpened = result == kIOReturnSuccess
+        updatePermissionStatuses(retryManagerOpen: false)
+        if result != kIOReturnSuccess, !appMode {
             throw ProbeError.openFailed(result)
         }
 
@@ -136,9 +127,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                  onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
-            // Input Monitoring consent is exposed indirectly through IOHIDManagerOpen.
-            // Recheck while the app runs so returning from System Settings updates
-            // permission indicators without requiring a manual refresh.
+            // Recheck TCC and runtime readiness while the app runs so returning from
+            // System Settings updates permission indicators without a manual refresh.
             permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshPermissions() }
             }
@@ -348,24 +338,74 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                         canLearnReturn: spotlightSuppressor != nil,
                         permissionNotice: permissionNotice, mappings: buttonMappings,
                         detectedButtons: detectedButtons,
-                        inputMonitoringGranted: inputMonitoringGranted,
-                        accessibilityGranted: AXIsProcessTrusted())
+                        inputMonitoringStatus: inputMonitoringStatus,
+                        accessibilityStatus: accessibilityStatus)
+    }
+
+    private func rebuildSpotlightSuppressorIfNeeded() {
+        guard liveMode, AXIsProcessTrusted(), spotlightSuppressor == nil else { return }
+        do {
+            let suppressor = try SpotlightSuppressor()
+            suppressor.setMappings(buttonMappings)
+            suppressor.setRemoteConnected(remote != nil)
+            suppressor.setBridgeEnabled(bridgeEnabled)
+            spotlightSuppressor = suppressor
+            print("spotlight_suppression_ready scope=AR_mic_hold_plus_300ms")
+        } catch {
+            fputs("warning: Spotlight suppression is not ready; live audio will still run\n", stderr)
+        }
+    }
+
+    private func updatePermissionStatuses(retryManagerOpen: Bool) {
+        let tccGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        if retryManagerOpen, tccGranted, !inputMonitoringManagerOpened {
+            let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            inputMonitoringManagerOpened = result == kIOReturnSuccess
+        }
+        if !tccGranted {
+            inputMonitoringStatus = .notGranted
+        } else if inputMonitoringManagerOpened {
+            inputMonitoringStatus = .granted
+        } else {
+            inputMonitoringStatus = .needsRestart
+        }
+
+        rebuildSpotlightSuppressorIfNeeded()
+        if !AXIsProcessTrusted() {
+            accessibilityStatus = .notGranted
+        } else if spotlightSuppressor != nil {
+            accessibilityStatus = .granted
+        } else {
+            accessibilityStatus = .needsRestart
+        }
+        permissionNotice = permissionNoticeForCurrentStatuses()
+    }
+
+    private func permissionNoticeForCurrentStatuses() -> String? {
+        switch inputMonitoringStatus {
+        case .notGranted:
+            return "请在输入监控设置中授权 AlexaRemoteBridge"
+        case .needsRestart:
+            return "输入监控已授权但运行时尚未就绪，请完全退出并重新打开 App"
+        case .granted:
+            switch accessibilityStatus {
+            case .notGranted:
+                return "需要辅助功能授权以执行按键映射和聚焦输入框"
+            case .needsRestart:
+                return "辅助功能已授权但运行时尚未就绪，请完全退出并重新打开 App"
+            case .granted:
+                return nil
+            }
+        }
     }
 
     private func refreshPermissions() {
-        let previousInputMonitoring = inputMonitoringGranted
-        let previousAccessibility = AXIsProcessTrusted()
+        let previousInputMonitoring = inputMonitoringStatus
+        let previousAccessibility = accessibilityStatus
         let previousNotice = permissionNotice
-        if !inputMonitoringGranted {
-            inputMonitoringGranted = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess
-        }
-        if AXIsProcessTrusted() {
-            permissionNotice = inputMonitoringGranted ? nil : "输入监控授权后请完全退出并重新打开 App"
-        } else {
-            permissionNotice = "需要辅助功能授权以执行按键映射和聚焦输入框"
-        }
-        guard previousInputMonitoring != inputMonitoringGranted ||
-              previousAccessibility != AXIsProcessTrusted() ||
+        updatePermissionStatuses(retryManagerOpen: true)
+        guard previousInputMonitoring != inputMonitoringStatus ||
+              previousAccessibility != accessibilityStatus ||
               previousNotice != permissionNotice else { return }
         refreshMenu()
     }

@@ -51,12 +51,18 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         return AppLanguage.text(message, "Grant AlexaRemoteBridge permission in Accessibility settings")
     case "左 Option 触发和按键映射需要辅助功能授权":
         return AppLanguage.text(message, "Accessibility permission is required for Left Option triggering and button mapping")
+    case "请在输入监控设置中授权 AlexaRemoteBridge":
+        return AppLanguage.text(message, "Grant AlexaRemoteBridge permission in Input Monitoring settings")
     case "请在输入监控设置中授权 AlexaRemoteBridge，然后重启应用":
         return AppLanguage.text(message, "Grant AlexaRemoteBridge permission in Input Monitoring settings, then restart the app")
     case "输入监控授权后请完全退出并重新打开 App":
         return AppLanguage.text(message, "After granting Input Monitoring, fully quit and reopen the app")
+    case "输入监控已授权但运行时尚未就绪，请完全退出并重新打开 App":
+        return AppLanguage.text(message, "Input Monitoring is granted, but the runtime is not ready. Fully quit and reopen the app")
     case "需要辅助功能授权以执行按键映射和聚焦输入框":
         return AppLanguage.text(message, "Accessibility permission is required for button mapping and input focus")
+    case "辅助功能已授权但运行时尚未就绪，请完全退出并重新打开 App":
+        return AppLanguage.text(message, "Accessibility is granted, but the runtime is not ready. Fully quit and reopen the app")
     default:
         if message.hasPrefix("音频输出初始化失败：") {
             let detail = String(message.dropFirst("音频输出初始化失败：".count))
@@ -92,8 +98,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private var mappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
     private var isRemoteConnected = false
-    private var inputMonitoringGranted = false
-    private var accessibilityGranted = false
+    private var inputMonitoringStatus: PermissionStatus = .notGranted
+    private var accessibilityStatus: PermissionStatus = .notGranted
 
     init(mode: VoiceInputMode,
          onToggle: @escaping () -> Bool,
@@ -124,7 +130,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                 learningAction: Bool, mappingCount: Int, canLearnReturn: Bool,
                 permissionNotice: String?, mappings: [RemoteButtonMapping],
                 detectedButtons: [DetectedRemoteButton],
-                inputMonitoringGranted: Bool, accessibilityGranted: Bool) {
+                inputMonitoringStatus: PermissionStatus, accessibilityStatus: PermissionStatus) {
         self.connected = connected
         self.speaking = speaking
         self.enabled = enabled
@@ -135,12 +141,12 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.mappings = mappings
         self.detectedButtons = detectedButtons
         self.isRemoteConnected = connected
-        self.inputMonitoringGranted = inputMonitoringGranted
-        self.accessibilityGranted = accessibilityGranted
+        self.inputMonitoringStatus = inputMonitoringStatus
+        self.accessibilityStatus = accessibilityStatus
         mappingWindow?.update(mappings: mappings, learning: learningAction,
                               connected: connected, detectedButtons: detectedButtons,
-                              inputMonitoringGranted: inputMonitoringGranted,
-                              accessibilityGranted: accessibilityGranted)
+                              inputMonitoringStatus: inputMonitoringStatus,
+                              accessibilityStatus: accessibilityStatus)
         refresh()
     }
 
@@ -304,8 +310,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         }
         mappingWindow?.update(mappings: mappings, learning: learningAction,
                               connected: isRemoteConnected, detectedButtons: detectedButtons,
-                              inputMonitoringGranted: inputMonitoringGranted,
-                              accessibilityGranted: accessibilityGranted)
+                              inputMonitoringStatus: inputMonitoringStatus,
+                              accessibilityStatus: accessibilityStatus)
         mappingWindow?.showWindow(nil)
         mappingWindow?.window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -353,11 +359,11 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     func update(mappings: [RemoteButtonMapping], learning: Bool,
                 connected: Bool, detectedButtons: [DetectedRemoteButton],
-                inputMonitoringGranted: Bool, accessibilityGranted: Bool) {
+                inputMonitoringStatus: PermissionStatus, accessibilityStatus: PermissionStatus) {
         model.update(mappings: mappings, learning: learning,
                      connected: connected, detectedButtons: detectedButtons,
-                     inputMonitoringGranted: inputMonitoringGranted,
-                     accessibilityGranted: accessibilityGranted)
+                     inputMonitoringStatus: inputMonitoringStatus,
+                     accessibilityStatus: accessibilityStatus)
     }
 
     func setLanguage(_ choice: AppLanguage.Choice) {
@@ -371,8 +377,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     @Published private(set) var connected = false
     @Published private(set) var detectedButtons: [DetectedRemoteButton] = []
     @Published private(set) var focusDiagnostic = AppLanguage.text("尚无聚焦记录", "No focus attempts yet")
-    @Published private(set) var inputMonitoringGranted = false
-    @Published private(set) var accessibilityGranted = false
+    @Published private(set) var inputMonitoringStatus: PermissionStatus = .notGranted
+    @Published private(set) var accessibilityStatus: PermissionStatus = .notGranted
     @Published var languageSelection = AppLanguage.choice.rawValue {
         didSet {
             guard let choice = AppLanguage.Choice(rawValue: languageSelection) else { return }
@@ -403,15 +409,15 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     func update(mappings: [RemoteButtonMapping], learning: Bool,
                 connected: Bool, detectedButtons: [DetectedRemoteButton],
-                inputMonitoringGranted: Bool, accessibilityGranted: Bool) {
+                inputMonitoringStatus: PermissionStatus, accessibilityStatus: PermissionStatus) {
         self.mappings = mappings
         self.learning = learning
         self.connected = connected
         self.detectedButtons = detectedButtons
         self.focusDiagnostic = UserDefaults.standard.string(forKey: "lastMappedAppFocusDiagnostic")
             ?? AppLanguage.text("尚无聚焦记录", "No focus attempts yet")
-        self.inputMonitoringGranted = inputMonitoringGranted
-        self.accessibilityGranted = accessibilityGranted
+        self.inputMonitoringStatus = inputMonitoringStatus
+        self.accessibilityStatus = accessibilityStatus
     }
 
     func chooseApp() {
@@ -433,16 +439,10 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     func cancelLearning() { onCancelLearning() }
     func setLanguage(_ choice: AppLanguage.Choice) { languageSelection = choice.rawValue }
     func openInputMonitoring() {
-        let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-        if !granted {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
-        }
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
     }
     func openAccessibility() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-        }
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 }
 
@@ -658,7 +658,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 
     private var permissionsContent: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        let allSet = model.inputMonitoringStatus == .granted && model.accessibilityStatus == .granted
+        return VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(AppLanguage.text("权限", "Permissions"))
@@ -668,13 +669,10 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Label(model.inputMonitoringGranted && model.accessibilityGranted
-                      ? AppLanguage.text("全部就绪", "All Set")
-                      : AppLanguage.text("需要授权", "Action Needed"),
-                      systemImage: model.inputMonitoringGranted && model.accessibilityGranted
-                      ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                Label(allSet ? AppLanguage.text("全部就绪", "All Set") : AppLanguage.text("需要处理", "Action Needed"),
+                      systemImage: allSet ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(model.inputMonitoringGranted && model.accessibilityGranted ? .green : .orange)
+                    .foregroundStyle(allSet ? .green : .orange)
                     .padding(.horizontal, 11)
                     .padding(.vertical, 8)
                     .background(.quaternary.opacity(0.5), in: Capsule())
@@ -683,20 +681,20 @@ private func localizedRuntimeMessage(_ message: String) -> String {
             VStack(alignment: .leading, spacing: 12) {
                 permissionCard(title: AppLanguage.text("输入监控", "Input Monitoring"),
                                detail: AppLanguage.text("读取 Alexa 遥控器的实体按键。", "Read physical button presses from the Alexa remote."),
-                               granted: model.inputMonitoringGranted,
-                               actionTitle: model.inputMonitoringGranted ? AppLanguage.text("管理…", "Manage…") : AppLanguage.text("前往授权…", "Grant Access…"),
+                               status: model.inputMonitoringStatus,
+                               actionTitle: permissionActionTitle(model.inputMonitoringStatus),
                                action: model.openInputMonitoring)
                 permissionCard(title: AppLanguage.text("辅助功能", "Accessibility"),
                                detail: AppLanguage.text("触发语音输入快捷键、执行按键映射并尝试聚焦输入框。", "Trigger voice-input shortcuts, run button mappings, and attempt to focus text fields."),
-                               granted: model.accessibilityGranted,
-                               actionTitle: model.accessibilityGranted ? AppLanguage.text("管理…", "Manage…") : AppLanguage.text("前往授权…", "Grant Access…"),
+                               status: model.accessibilityStatus,
+                               actionTitle: permissionActionTitle(model.accessibilityStatus),
                                action: model.openAccessibility)
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Label(AppLanguage.text("授权后会自动确认", "Automatic status check"), systemImage: "arrow.clockwise.circle")
                     .font(.system(size: 13, weight: .semibold))
-                Text(AppLanguage.text("点对应按钮打开系统设置并允许 AlexaRemoteBridge；完成后切回 App，状态会自动更新为绿色对勾。若更换了 App 位置或重新下载了新构建，macOS 可能要求再次授权。", "Use the button for each permission to open System Settings and allow AlexaRemoteBridge. Return to the app and its status will update automatically. macOS may ask again after the app is moved or a new build is downloaded."))
+                Text(AppLanguage.text("未授权时请打开对应系统设置。系统已授权但运行时未就绪时，请完全退出并重新打开 App；只有两项都真正生效时才显示绿色对勾。", "Open the corresponding System Settings when a permission is not granted. If permission is granted but the runtime is not ready, fully quit and reopen the app. The green check appears only when both permissions are actually ready."))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -722,15 +720,33 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary, lineWidth: 1))
     }
 
-    private func permissionCard(title: String, detail: String, granted: Bool,
-                                actionTitle: String, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(granted ? .green : .orange)
+    private func permissionActionTitle(_ status: PermissionStatus) -> String {
+        switch status {
+        case .notGranted: return AppLanguage.text("前往授权…", "Grant Access…")
+        case .needsRestart: return AppLanguage.text("打开设置…", "Open Settings…")
+        case .granted: return AppLanguage.text("管理…", "Manage…")
+        }
+    }
+
+    private func permissionCard(title: String, detail: String, status: PermissionStatus,
+                               actionTitle: String, action: @escaping () -> Void) -> some View {
+        let isGranted = status == .granted
+        let statusText: String
+        switch status {
+        case .notGranted:
+            statusText = AppLanguage.text("未授权 · \(detail)", "Not Granted · \(detail)")
+        case .needsRestart:
+            statusText = AppLanguage.text("已授权但运行时未就绪，请完全退出并重新打开 App", "Granted, but runtime is not ready. Quit and reopen the app")
+        case .granted:
+            statusText = AppLanguage.text("已生效 · \(detail)", "Ready · \(detail)")
+        }
+        return HStack(spacing: 10) {
+            Image(systemName: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(isGranted ? .green : .orange)
                 .font(.system(size: 18))
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.system(size: 12, weight: .semibold))
-                Text(granted ? AppLanguage.text("已授权 · \(detail)", "Granted · \(detail)") : AppLanguage.text("未授权 · \(detail)", "Not Granted · \(detail)"))
+                Text(statusText)
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
