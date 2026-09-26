@@ -40,6 +40,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var buttonMappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
     private var permissionNotice: String?
+    private var inputMonitoringGranted = false
     private var audioFrames = 0
     private var safetyTimer: Timer?
 
@@ -101,6 +102,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         let options = seize ? IOOptionBits(kIOHIDOptionsTypeSeizeDevice) : IOOptionBits(kIOHIDOptionsTypeNone)
         let result = IOHIDManagerOpen(manager, options)
+        inputMonitoringGranted = result == kIOReturnSuccess
         if result != kIOReturnSuccess, appMode {
             permissionNotice = "请在输入监控设置中授权 AlexaRemoteBridge，然后重启应用"
         } else if result != kIOReturnSuccess {
@@ -126,6 +128,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                  onClearMappings: { [weak self] in self?.clearButtonMappings() },
                                  onRemoveMapping: { [weak self] index in self?.removeButtonMapping(at: index) },
                                  onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
+                                 onRefreshPermissions: { [weak self] in self?.refreshPermissions() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
             application.run()
@@ -312,7 +315,21 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                         learningAction: learningAction, mappingCount: buttonMappings.count,
                         canLearnReturn: spotlightSuppressor != nil,
                         permissionNotice: permissionNotice, mappings: buttonMappings,
-                        detectedButtons: detectedButtons)
+                        detectedButtons: detectedButtons,
+                        inputMonitoringGranted: inputMonitoringGranted,
+                        accessibilityGranted: AXIsProcessTrusted())
+    }
+
+    private func refreshPermissions() {
+        if !inputMonitoringGranted {
+            inputMonitoringGranted = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess
+        }
+        if AXIsProcessTrusted() {
+            permissionNotice = inputMonitoringGranted ? nil : "输入监控授权后请完全退出并重新打开 App"
+        } else {
+            permissionNotice = "需要辅助功能授权以执行按键映射和聚焦输入框"
+        }
+        refreshMenu()
     }
 
     private func recordDetectedButton(signature: String, keyCode: UInt16?) {

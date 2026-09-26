@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import OSLog
@@ -121,22 +122,103 @@ final class SpotlightSuppressor: @unchecked Sendable {
             case .sendReturn:
                 postReturn()
             case .launchApp(let path):
-                let appURL = URL(fileURLWithPath: path)
-                if let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
-                   let runningApp = NSRunningApplication.runningApplications(
-                       withBundleIdentifier: bundleIdentifier
-                   ).first {
-                    runningApp.unhide()
-                    _ = runningApp.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-                    return
-                }
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
-                    if let error { fputs("mapped_app_open_failed path=\(path) error=\(error)\n", stderr) }
-                }
+                openAppAndFocusInput(path: path)
             }
         }
+    }
+
+    private static func openAppAndFocusInput(path: String) {
+        let appURL = URL(fileURLWithPath: path)
+        let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier
+        if let bundleIdentifier,
+           let runningApp = NSRunningApplication.runningApplications(
+               withBundleIdentifier: bundleIdentifier
+           ).first {
+            runningApp.unhide()
+            _ = runningApp.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            focusInputAfterActivation(processIdentifier: runningApp.processIdentifier)
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { application, error in
+            if let error {
+                fputs("mapped_app_open_failed path=\(path) error=\(error)\n", stderr)
+                return
+            }
+            guard let application else { return }
+            focusInputAfterActivation(processIdentifier: application.processIdentifier)
+        }
+    }
+
+    private static func focusInputAfterActivation(processIdentifier: pid_t) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard AXIsProcessTrusted() else {
+                fputs("mapped_app_focus_failed reason=accessibility_not_trusted\n", stderr)
+                return
+            }
+            let appElement = AXUIElementCreateApplication(processIdentifier)
+            var focusedWindowValue: CFTypeRef?
+            let windowResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString,
+                                                             &focusedWindowValue)
+            let root: AXUIElement
+            if windowResult == .success, let focusedWindowValue {
+                root = unsafeDowncast(focusedWindowValue, to: AXUIElement.self)
+            } else {
+                root = appElement
+            }
+            let candidates = focusableTextInputs(under: root, depth: 0, budget: 2_000)
+                .sorted { $0.score > $1.score }
+            for candidate in candidates {
+                if AXUIElementSetAttributeValue(candidate.element, kAXFocusedAttribute as CFString,
+                                                kCFBooleanTrue) == .success {
+                    fputs("mapped_app_input_focused pid=\(processIdentifier) role=\(candidate.role)\n", stderr)
+                    return
+                }
+            }
+            fputs("mapped_app_focus_failed reason=no_focusable_text_input pid=\(processIdentifier)\n", stderr)
+        }
+    }
+
+    private static func focusableTextInputs(under element: AXUIElement, depth: Int,
+                                            budget: Int) -> [(element: AXUIElement, role: String, score: Int)] {
+        guard depth < 14, budget > 0 else { return [] }
+        var results: [(element: AXUIElement, role: String, score: Int)] = []
+        var roleValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+           let role = roleValue as? String,
+           [kAXTextAreaRole as String, kAXTextFieldRole as String, kAXComboBoxRole as String].contains(role) {
+            var enabledValue: CFTypeRef?
+            let enabledResult = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString,
+                                                              &enabledValue)
+            let enabled = enabledResult != .success || (enabledValue as? NSNumber)?.boolValue == true
+            var score = role == (kAXTextAreaRole as String) ? 10 : 2
+            for attribute in [kAXDescriptionAttribute, kAXTitleAttribute, kAXPlaceholderValueAttribute,
+                              kAXIdentifierAttribute] {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+                   let text = value as? String {
+                    let normalized = text.lowercased()
+                    if ["message", "prompt", "ask", "chat", "消息", "输入"].contains(where: normalized.contains) {
+                        score += 30
+                    }
+                }
+            }
+            if enabled { results.append((element, role, score)) }
+        }
+
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString,
+                                            &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else { return results }
+        var remaining = budget - 1
+        for child in children where remaining > 0 {
+            let found = focusableTextInputs(under: child, depth: depth + 1, budget: remaining)
+            results.append(contentsOf: found)
+            remaining -= found.count + 1
+        }
+        return results
     }
 
     private static func postReturn() {
