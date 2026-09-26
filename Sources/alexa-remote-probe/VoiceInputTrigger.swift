@@ -2,6 +2,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 import IOKit.hidsystem
+import OSLog
 
 enum VoiceInputMode: String {
     case none
@@ -22,9 +23,12 @@ enum VoiceInputMode: String {
 /// dictation app. This only posts keys; the app itself performs transcription.
 // All operations are confined to the HID callback's run loop.
 final class VoiceInputTrigger: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "dev.faintbear.AlexaRemoteBridge", category: "voice-key")
     let mode: VoiceInputMode
     private var active = false
+    private var eventSource: CGEventSource?
     private var pendingRelease: Timer?
+    private var activeSince: Date?
 
     init(mode: VoiceInputMode) throws {
         self.mode = mode
@@ -34,8 +38,18 @@ final class VoiceInputTrigger: @unchecked Sendable {
         pendingRelease?.invalidate()
         pendingRelease = nil
         guard !active else { return }
-        guard mode == .none || AXIsProcessTrusted() else { return }
+        guard mode == .none || AXIsProcessTrusted() else {
+            Self.logger.error("voice shortcut not posted: Accessibility permission is missing for this app identity")
+            return
+        }
+        eventSource = CGEventSource(stateID: .hidSystemState)
+        guard mode == .none || eventSource != nil else {
+            Self.logger.error("voice shortcut not posted: failed to create HID event source")
+            return
+        }
         active = true
+        activeSince = Date()
+        Self.logger.info("posting voice shortcut mode=\(self.mode.rawValue, privacy: .public) phase=down")
         switch mode {
         case .none:
             break
@@ -57,6 +71,8 @@ final class VoiceInputTrigger: @unchecked Sendable {
     func end() {
         guard active else { return }
         pendingRelease?.invalidate()
+        let heldMilliseconds = activeSince.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? -1
+        Self.logger.notice("voice shortcut release scheduled held_ms=\(heldMilliseconds) delay_ms=180")
         pendingRelease = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
             self?.releaseNow()
         }
@@ -71,6 +87,8 @@ final class VoiceInputTrigger: @unchecked Sendable {
     private func releaseNow() {
         guard active else { return }
         active = false
+        let heldMilliseconds = activeSince.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? -1
+        Self.logger.notice("voice shortcut released held_ms=\(heldMilliseconds)")
         switch mode {
         case .none:
             break
@@ -83,6 +101,8 @@ final class VoiceInputTrigger: @unchecked Sendable {
         case .rightOptionHold:
             post(keyCode: 61, down: false, flags: [])
         }
+        activeSince = nil
+        eventSource = nil
     }
 
     private func tap(keyCode: CGKeyCode, flags: CGEventFlags) {
@@ -91,9 +111,14 @@ final class VoiceInputTrigger: @unchecked Sendable {
     }
 
     private func post(keyCode: CGKeyCode, down: Bool, flags: CGEventFlags) {
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else { return }
+        guard let source = eventSource ?? CGEventSource(stateID: .hidSystemState),
+              let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down) else {
+            Self.logger.error("failed to create voice shortcut event keyCode=\(keyCode)")
+            return
+        }
         event.flags = flags
         event.post(tap: .cghidEventTap)
+        Self.logger.info("posted voice shortcut keyCode=\(keyCode) down=\(down) flags=\(flags.rawValue)")
     }
 }
 

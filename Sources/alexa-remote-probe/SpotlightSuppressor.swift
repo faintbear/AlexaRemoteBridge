@@ -1,9 +1,12 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import OSLog
 
 // HID reports from the AR remote arrive before macOS posts keycode 177.
 // Consume that key only in the short window after this remote's mic press.
 final class SpotlightSuppressor: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "dev.faintbear.AlexaRemoteBridge", category: "input")
     private let tap: CFMachPort
 
     init() throws {
@@ -17,13 +20,19 @@ final class SpotlightSuppressor: @unchecked Sendable {
                                           callback: { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let state = Unmanaged<State>.fromOpaque(context).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                SpotlightSuppressor.logger.error("event tap disabled; re-enabling")
+                if let tap = state.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
             if event.getIntegerValueField(.eventSourceUserData) == State.syntheticEventMarker {
                 return Unmanaged.passUnretained(event)
             }
             if (type == .keyDown || type == .keyUp),
                event.getIntegerValueField(.keyboardEventKeycode) == 177 {
-                let shouldSuppress = state.micHeld || Date().timeIntervalSince1970 <= state.windowUntil
-                if shouldSuppress { return nil }
+                if state.remoteConnected && state.bridgeEnabled {
+                    return nil
+                }
             }
             guard type == .keyDown || type == .keyUp else {
                 return Unmanaged.passUnretained(event)
@@ -38,18 +47,25 @@ final class SpotlightSuppressor: @unchecked Sendable {
                 return Unmanaged.passUnretained(event)
             }
             state.pendingButtonSignature = nil
-            if state.isLearningReturn {
-                state.returnKeyCodes[keyCode] = signature
-                state.isLearningReturn = false
-                state.onReturnLearned?(signature, keyCode)
+            if let action = state.learningAction {
+                state.actionsByKeyCode[keyCode] = action
+                state.signaturesByKeyCode[keyCode] = signature
+                state.learningAction = nil
+                let onButtonLearned = state.onButtonLearned
+                state.onButtonLearned = nil
+                fputs("remote_button_learning_captured signature=\(signature) keycode=\(keyCode)\n", stderr)
+                DispatchQueue.main.async {
+                    onButtonLearned?(signature, keyCode, action)
+                }
                 state.suppressedKeyCodes.insert(keyCode)
                 return nil
             }
-            guard state.returnKeyCodes[keyCode] == signature else {
+            guard state.signaturesByKeyCode[keyCode] == signature,
+                  let action = state.actionsByKeyCode[keyCode] else {
                 return Unmanaged.passUnretained(event)
             }
             state.suppressedKeyCodes.insert(keyCode)
-            SpotlightSuppressor.postReturn()
+            SpotlightSuppressor.perform(action)
             return nil
         }, userInfo: context) else {
             Unmanaged<State>.fromOpaque(context).release()
@@ -57,6 +73,7 @@ final class SpotlightSuppressor: @unchecked Sendable {
         }
         self.tap = tap
         self.state = state
+        state.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
@@ -69,18 +86,17 @@ final class SpotlightSuppressor: @unchecked Sendable {
         Unmanaged.passUnretained(state).release()
     }
 
-    func noteMicPress() {
-        state.micHeld = true
-        state.windowUntil = Date().timeIntervalSince1970 + 0.3
+    func setRemoteConnected(_ connected: Bool) {
+        state.remoteConnected = connected
     }
 
-    func noteMicRelease() {
-        state.micHeld = false
-        state.windowUntil = Date().timeIntervalSince1970 + 0.3
+    func setBridgeEnabled(_ enabled: Bool) {
+        state.bridgeEnabled = enabled
     }
 
-    func setReturnMappings(_ mappings: [UInt16: String]) {
-        state.returnKeyCodes = mappings
+    func setMappings(_ mappings: [RemoteButtonMapping]) {
+        state.actionsByKeyCode = Dictionary(uniqueKeysWithValues: mappings.map { ($0.keyCode, $0.action) })
+        state.signaturesByKeyCode = Dictionary(uniqueKeysWithValues: mappings.map { ($0.keyCode, $0.signature) })
     }
 
     func noteHardwareButton(signature: String) {
@@ -88,14 +104,39 @@ final class SpotlightSuppressor: @unchecked Sendable {
         state.pendingButtonUntil = Date().timeIntervalSince1970 + 0.25
     }
 
-    func beginReturnButtonLearning(onLearned: @escaping (String, UInt16) -> Void) {
-        state.isLearningReturn = true
-        state.onReturnLearned = onLearned
+    func beginButtonLearning(action: RemoteButtonAction,
+                             onLearned: @escaping (String, UInt16, RemoteButtonAction) -> Void) {
+        state.learningAction = action
+        state.onButtonLearned = onLearned
     }
 
     func cancelReturnButtonLearning() {
-        state.isLearningReturn = false
-        state.onReturnLearned = nil
+        state.learningAction = nil
+        state.onButtonLearned = nil
+    }
+
+    private static func perform(_ action: RemoteButtonAction) {
+        MainActor.assumeIsolated {
+            switch action {
+            case .sendReturn:
+                postReturn()
+            case .launchApp(let path):
+                let appURL = URL(fileURLWithPath: path)
+                if let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
+                   let runningApp = NSRunningApplication.runningApplications(
+                       withBundleIdentifier: bundleIdentifier
+                   ).first {
+                    runningApp.unhide()
+                    _ = runningApp.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    return
+                }
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
+                    if let error { fputs("mapped_app_open_failed path=\(path) error=\(error)\n", stderr) }
+                }
+            }
+        }
     }
 
     private static func postReturn() {
@@ -111,14 +152,16 @@ final class SpotlightSuppressor: @unchecked Sendable {
 
 private final class State: @unchecked Sendable {
     static let syntheticEventMarker: Int64 = 0x41524D4150504544
-    var micHeld = false
-    var windowUntil: TimeInterval = 0
+    var tap: CFMachPort?
+    var remoteConnected = false
+    var bridgeEnabled = true
     var pendingButtonSignature: String?
     var pendingButtonUntil: TimeInterval = 0
-    var returnKeyCodes: [UInt16: String] = [:]
+    var signaturesByKeyCode: [UInt16: String] = [:]
+    var actionsByKeyCode: [UInt16: RemoteButtonAction] = [:]
     var suppressedKeyCodes: Set<UInt16> = []
-    var isLearningReturn = false
-    var onReturnLearned: ((String, UInt16) -> Void)?
+    var learningAction: RemoteButtonAction?
+    var onButtonLearned: ((String, UInt16, RemoteButtonAction) -> Void)?
 }
 
 private enum SuppressorError: Error {

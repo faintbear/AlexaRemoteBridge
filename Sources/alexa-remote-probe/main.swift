@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import IOKit.hid
+import OSLog
 
 private let amazonVendorID = 0x0171
 private let alexaRemoteProductID = 0x041E
@@ -17,7 +18,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
 
 // HID callbacks and the safety timer are scheduled on the same run loop.
 @MainActor private final class Probe: @unchecked Sendable {
-    private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    private static let logger = Logger(subsystem: "dev.faintbear.AlexaRemoteBridge", category: "remote-hid")
+    private lazy var manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     private var buffers: [IOHIDDevice: UnsafeMutablePointer<UInt8>] = [:]
     private let seize = CommandLine.arguments.contains("--seize")
     private let audioTest = CommandLine.arguments.contains("--audio-test")
@@ -31,9 +33,12 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var remote: IOHIDDevice?
     private var streaming = false
     private var micButtonDown = false
+    private var micPressStartedAt: TimeInterval?
+    private var pendingMicRelease: Timer?
     private var bridgeEnabled = true
-    private var learningReturn = false
-    private var returnMappings: [UInt16: String] = [:]
+    private var learningAction = false
+    private var buttonMappings: [RemoteButtonMapping] = []
+    private var detectedButtons: [DetectedRemoteButton] = []
     private var permissionNotice: String?
     private var audioFrames = 0
     private var safetyTimer: Timer?
@@ -45,6 +50,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     }
 
     func run() throws {
+        let application = appMode ? NSApplication.shared : nil
+        application?.setActivationPolicy(.accessory)
         if let index = CommandLine.arguments.firstIndex(of: "--record-wav") {
             guard CommandLine.arguments.indices.contains(index + 1) else {
                 throw ProbeError.missingOutputPath
@@ -52,7 +59,6 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             recorder = try OpusRecorder(path: CommandLine.arguments[index + 1])
         }
         if liveMode {
-            liveOutput = try LiveAudioOutput(deviceName: "BlackHole 2ch")
             if recorder == nil { recorder = try OpusRecorder(path: nil) }
             let voiceMode = try Self.selectedVoiceMode()
             voiceInputTrigger = try VoiceInputTrigger(mode: voiceMode)
@@ -111,14 +117,15 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             print("accessibility_trusted=\(AXIsProcessTrusted()) spotlight_suppressor=\(spotlightSuppressor != nil)")
         }
         print("Press ordinary buttons, then hold the Alexa button and speak. Press Control-C to stop.")
-        if appMode {
-            let application = NSApplication.shared
-            application.setActivationPolicy(.accessory)
+        if let application {
             menuBar = MenuBarApp(mode: voiceInputTrigger?.mode ?? .none,
                                  onToggle: { [weak self] in self?.toggleBridge() ?? false },
                                  onModeChange: { [weak self] mode in try self?.changeVoiceMode(mode) },
-                                 onLearnReturn: { [weak self] in self?.beginReturnLearning() },
-                                 onClearReturn: { [weak self] in self?.clearReturnMapping() },
+                                 onLearnAction: { [weak self] action in self?.beginButtonLearning(action: action) },
+                                 onChooseApp: { [weak self] path in self?.beginButtonLearning(action: .launchApp(path: path)) },
+                                 onClearMappings: { [weak self] in self?.clearButtonMappings() },
+                                 onRemoveMapping: { [weak self] index in self?.removeButtonMapping(at: index) },
+                                 onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
             application.run()
@@ -160,16 +167,20 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         let product = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? "unknown"
         let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String ?? "unknown"
         print("\(timestamp()) device_matched product=\(product) transport=\(transport)")
+        spotlightSuppressor?.setRemoteConnected(true)
         refreshMenu()
     }
 
     private func deviceRemoved(_ device: IOHIDDevice) {
         if remote == device {
+            pendingMicRelease?.invalidate()
+            pendingMicRelease = nil
             if streaming { setAudio(enabled: false) }
             remote = nil
             streaming = false
             micButtonDown = false
-            spotlightSuppressor?.noteMicRelease()
+            micPressStartedAt = nil
+            spotlightSuppressor?.setRemoteConnected(false)
             voiceInputTrigger?.cancel()
             safetyTimer?.invalidate()
         }
@@ -188,21 +199,46 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             if hasButtonPayload, !(reportID == 2 && usage == 0x0221) {
                 let signature = String(format: "%02X:%02X:%02X", reportID, bytes[1], bytes[2])
                 spotlightSuppressor?.noteHardwareButton(signature: signature)
+                let payload = (0..<safeLength).map { String(format: "%02X", bytes[$0]) }.joined(separator: " ")
+                recordDetectedButton(signature: String(format: "report %02X · %@", reportID, payload), keyCode: nil)
             }
         }
         if bridgeEnabled && (audioTest || recorder != nil), reportID == 2, safeLength >= 3 {
             let usage = UInt16(bytes[1]) | (UInt16(bytes[2]) << 8)
-            if usage == 0x0221, !micButtonDown {
-                micButtonDown = true
-                print("\(timestamp()) remote_mic_down suppressor_ready=\(spotlightSuppressor != nil)")
-                fflush(stdout)
-                spotlightSuppressor?.noteMicPress()
-                if !streaming { setAudio(enabled: true) }
+            if usage == 0x0221 {
+                if pendingMicRelease != nil {
+                    Self.logger.notice("remote mic release cancelled: press resumed")
+                    print("\(timestamp()) remote_mic_release_cancelled reason=press_resumed")
+                    pendingMicRelease?.invalidate()
+                    pendingMicRelease = nil
+                }
+                if !micButtonDown {
+                    micButtonDown = true
+                    micPressStartedAt = Date().timeIntervalSince1970
+                    Self.logger.notice("remote mic down")
+                    print("\(timestamp()) remote_mic_down suppressor_ready=\(spotlightSuppressor != nil)")
+                    fflush(stdout)
+                    if !streaming { setAudio(enabled: true) }
+                }
             }
-            if usage == 0, micButtonDown {
-                micButtonDown = false
-                spotlightSuppressor?.noteMicRelease()
-                if streaming { setAudio(enabled: false) }
+            if usage == 0, micButtonDown, pendingMicRelease == nil {
+                let heldFor = micPressStartedAt.map { Int((Date().timeIntervalSince1970 - $0) * 1_000) } ?? -1
+                Self.logger.notice("remote mic release candidate held_ms=\(heldFor) debounce_ms=450")
+                print("\(timestamp()) remote_mic_release_candidate held_ms=\(heldFor) debounce_ms=450")
+                fflush(stdout)
+                pendingMicRelease = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, self.micButtonDown else { return }
+                        let confirmedHold = self.micPressStartedAt.map { Int((Date().timeIntervalSince1970 - $0) * 1_000) } ?? -1
+                        Self.logger.notice("remote mic up confirmed held_ms=\(confirmedHold)")
+                        print("\(timestamp()) remote_mic_up_confirmed held_ms=\(confirmedHold)")
+                        fflush(stdout)
+                        self.pendingMicRelease = nil
+                        self.micButtonDown = false
+                        self.micPressStartedAt = nil
+                        if self.streaming { self.setAudio(enabled: false) }
+                    }
+                }
             }
         }
         if reportID == 0xF0 {
@@ -226,10 +262,21 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
 
     private func setAudio(enabled: Bool) {
         guard let remote else { return }
+        if enabled, liveMode, liveOutput == nil {
+            do {
+                liveOutput = try LiveAudioOutput(deviceName: "BlackHole 2ch")
+            } catch {
+                permissionNotice = "音频输出初始化失败：\(error.localizedDescription)"
+                fputs("live_output_init_failed error=\(error)\n", stderr)
+                refreshMenu()
+                return
+            }
+        }
         let report: [UInt8] = [0xF2, enabled ? 0x01 : 0x00]
         let result = report.withUnsafeBufferPointer { pointer in
             IOHIDDeviceSetReport(remote, kIOHIDReportTypeOutput, 0xF2, pointer.baseAddress!, report.count)
         }
+        Self.logger.notice("audio command enabled=\(enabled) result=\(result) frames=\(self.audioFrames)")
         print("\(timestamp()) audio_\(enabled ? "start" : "stop") result=0x\(String(format: "%08X", UInt32(bitPattern: result))) frames=\(audioFrames)")
         fflush(stdout)
         guard result == kIOReturnSuccess else {
@@ -248,7 +295,6 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                     guard let self, self.streaming else { return }
                     print("\(timestamp()) safety_timeout")
                     self.micButtonDown = false
-                    self.spotlightSuppressor?.noteMicRelease()
                     self.setAudio(enabled: false)
                 }
             }
@@ -263,13 +309,27 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
 
     private func refreshMenu() {
         menuBar?.update(connected: remote != nil, speaking: streaming, enabled: bridgeEnabled,
-                        learningReturn: learningReturn, hasReturnMapping: !returnMappings.isEmpty,
+                        learningAction: learningAction, mappingCount: buttonMappings.count,
                         canLearnReturn: spotlightSuppressor != nil,
-                        permissionNotice: permissionNotice)
+                        permissionNotice: permissionNotice, mappings: buttonMappings,
+                        detectedButtons: detectedButtons)
+    }
+
+    private func recordDetectedButton(signature: String, keyCode: UInt16?) {
+        let now = Date()
+        if let last = detectedButtons.first,
+           last.signature == signature,
+           now.timeIntervalSince(last.detectedAt) < 1.0 { return }
+        detectedButtons.insert(DetectedRemoteButton(signature: signature, keyCode: keyCode, detectedAt: now), at: 0)
+        if detectedButtons.count > 12 { detectedButtons.removeLast(detectedButtons.count - 12) }
+        print("remote_button_detected signature=\(signature) keycode=\(keyCode.map(String.init) ?? "hid-only")")
+        fflush(stdout)
+        refreshMenu()
     }
 
     private func toggleBridge() -> Bool {
         bridgeEnabled.toggle()
+        spotlightSuppressor?.setBridgeEnabled(bridgeEnabled)
         if !bridgeEnabled, streaming { setAudio(enabled: false) }
         refreshMenu()
         return bridgeEnabled
@@ -283,37 +343,52 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     }
 
     private func loadReturnMappings() {
-        let saved = UserDefaults.standard.dictionary(forKey: "returnButtonMappings") as? [String: NSNumber] ?? [:]
-        returnMappings.removeAll()
-        for (signature, code) in saved {
-            guard let value = UInt16(exactly: code.intValue) else { continue }
-            returnMappings[value] = signature
+        if let data = UserDefaults.standard.data(forKey: "remoteButtonMappings"),
+           let decoded = try? JSONDecoder().decode([RemoteButtonMapping].self, from: data) {
+            buttonMappings = decoded
         }
-        spotlightSuppressor?.setReturnMappings(returnMappings)
+        spotlightSuppressor?.setMappings(buttonMappings)
     }
 
-    private func beginReturnLearning() {
-        learningReturn = true
-        spotlightSuppressor?.beginReturnButtonLearning { [weak self] signature, keyCode in
+    private func beginButtonLearning(action: RemoteButtonAction) {
+        learningAction = true
+        spotlightSuppressor?.beginButtonLearning(action: action) { [weak self] signature, keyCode, action in
             guard let self else { return }
-            self.learningReturn = false
-            self.returnMappings.removeAll()
-            self.returnMappings[keyCode] = signature
-            let saved = Dictionary(uniqueKeysWithValues: self.returnMappings.map { ($1, NSNumber(value: $0)) })
-            UserDefaults.standard.set(saved, forKey: "returnButtonMappings")
-            self.spotlightSuppressor?.setReturnMappings(self.returnMappings)
+            self.learningAction = false
+            self.buttonMappings.removeAll { $0.keyCode == keyCode || $0.signature == signature }
+            self.buttonMappings.append(RemoteButtonMapping(signature: signature, keyCode: keyCode, action: action))
+            if let data = try? JSONEncoder().encode(self.buttonMappings) {
+                UserDefaults.standard.set(data, forKey: "remoteButtonMappings")
+            }
+            self.spotlightSuppressor?.setMappings(self.buttonMappings)
             self.refreshMenu()
-            print("return_button_mapped signature=\(signature) keycode=\(keyCode)")
+            print("remote_button_mapped signature=\(signature) keycode=\(keyCode) action=\(action)")
         }
         refreshMenu()
     }
 
-    private func clearReturnMapping() {
-        learningReturn = false
-        returnMappings.removeAll()
+    private func clearButtonMappings() {
+        learningAction = false
+        buttonMappings.removeAll()
         spotlightSuppressor?.cancelReturnButtonLearning()
-        spotlightSuppressor?.setReturnMappings([:])
-        UserDefaults.standard.removeObject(forKey: "returnButtonMappings")
+        spotlightSuppressor?.setMappings([])
+        UserDefaults.standard.removeObject(forKey: "remoteButtonMappings")
+        refreshMenu()
+    }
+
+    private func removeButtonMapping(at index: Int) {
+        guard buttonMappings.indices.contains(index) else { return }
+        buttonMappings.remove(at: index)
+        if let data = try? JSONEncoder().encode(buttonMappings) {
+            UserDefaults.standard.set(data, forKey: "remoteButtonMappings")
+        }
+        spotlightSuppressor?.setMappings(buttonMappings)
+        refreshMenu()
+    }
+
+    private func cancelButtonLearning() {
+        learningAction = false
+        spotlightSuppressor?.cancelReturnButtonLearning()
         refreshMenu()
     }
 

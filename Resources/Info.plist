@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
-    <key>CFBundleExecutable</key><string>alexa-remote-probe</string>
+    <key>CFBundleExecutable</key><string>AlexaRemoteBridge</string>
     <key>CFBundleIdentifier</key><string>dev.faintbear.AlexaRemoteBridge</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>AlexaRemoteBridge</string>
