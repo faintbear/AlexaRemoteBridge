@@ -430,6 +430,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     @ObservedObject var model: MappingDashboardModel
     private let blue = Color(red: 0.02, green: 0.62, blue: 0.86)
     @State private var selectedSection: DashboardSection = .mapping
+    @State private var highlightedButton: RemoteButtonKey?
 
     private enum DashboardSection: String, CaseIterable, Identifiable {
         case mapping
@@ -527,10 +528,25 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     private var mappingContent: some View {
         HStack(alignment: .top, spacing: 24) {
-            RemoteIllustration(activeButton: model.detectedButtons.first?.remoteButton)
+            RemoteIllustration(activeButton: highlightedButton)
                 .frame(width: 205, height: 540)
                 .frame(width: 220)
                 .frame(maxHeight: .infinity, alignment: .center)
+                .task(id: model.detectedButtons.first?.detectedAt) {
+                    guard let latestDetection = model.detectedButtons.first else {
+                        highlightedButton = nil
+                        return
+                    }
+
+                    highlightedButton = latestDetection.remoteButton
+                    do {
+                        try await Task.sleep(nanoseconds: 5_000_000_000)
+                    } catch {
+                        return
+                    }
+                    guard !Task.isCancelled else { return }
+                    highlightedButton = nil
+                }
 
             VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 14) {
