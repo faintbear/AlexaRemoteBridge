@@ -1,6 +1,7 @@
 # AlexaRemoteBridge
 
-<img width="1076" height="637" alt="image" src="https://github.com/user-attachments/assets/3267b0bf-f902-43d7-8ca9-a91ad3c48855" />
+<img width="1075" height="651" alt="image" src="https://github.com/user-attachments/assets/72db3a87-aa6b-4686-9009-b2a1d2799f46" />
+
 
 
 <p align="right"><a href="README.zh-CN.md">简体中文</a> &nbsp;·&nbsp; <a href="README.md">English</a></p>
