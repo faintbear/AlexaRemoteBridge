@@ -51,7 +51,7 @@ While in use, audio is streamed in real time to a virtual audio device on your M
 
 ## Development
 
-- [Product scope and implementation status](PRODUCT_REQUIREMENTS.md)
+- [Product scope and implementation status (Chinese)](PRODUCT_REQUIREMENTS.md)
 
 ## License
 
