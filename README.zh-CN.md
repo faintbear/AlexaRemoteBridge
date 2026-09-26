@@ -5,6 +5,7 @@
 AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remote（第 3 代，型号 L5B83G）成为 Mac 上的无线语音输入遥控器。按住遥控器的麦克风键即可说话；也可以把遥控器上的其他按键映射为打开常用 App 或发送 Return。
 
 项目仍处于实验阶段，目前针对 Alexa Voice Remote 3rd Gen 开发和测试。
+这是一个独立项目，与 Amazon 无隶属或官方合作关系。
 
 ## 功能
 
@@ -50,4 +51,13 @@ zsh scripts/build-app.sh
 
 ## 开发资料
 
-- [产品需求与验收说明](PRODUCT_REQUIREMENTS.md)
+- [产品范围与实现状态](PRODUCT_REQUIREMENTS.md)
+
+## 许可证
+
+本项目根据 GNU 通用公共许可证第 3 版或（由你选择）任何后续版本授权。完整文本请参阅 [LICENSE](LICENSE)。
+
+## 参与贡献与安全问题
+
+- [贡献指南](CONTRIBUTING.md)
+- [安全问题报告方式](SECURITY.md)
