@@ -205,6 +205,14 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         launch.target = self
         launch.isEnabled = !learningAction && canLearnReturn
         menu.addItem(launch)
+        let controlEscape = NSMenuItem(title: AppLanguage.text("学习按键发送 Control+Escape", "Map Button to Send Control+Escape"), action: #selector(learnControlEscape), keyEquivalent: "")
+        controlEscape.target = self
+        controlEscape.isEnabled = !learningAction && canLearnReturn
+        menu.addItem(controlEscape)
+        let deleteKey = NSMenuItem(title: AppLanguage.text("学习按键发送 Delete", "Map Button to Send Delete"), action: #selector(learnDelete), keyEquivalent: "")
+        deleteKey.target = self
+        deleteKey.isEnabled = !learningAction && canLearnReturn
+        menu.addItem(deleteKey)
         let settings = NSMenuItem(title: AppLanguage.text("按键映射设置…", "Button Mapping Settings…"), action: #selector(openMappingSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
@@ -281,6 +289,20 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         }
     }
 
+    @objc private func learnControlEscape() {
+        onLearnAction(.sendControlEscape)
+        learningAction = true
+        errorMessage = nil
+        refresh()
+    }
+
+    @objc private func learnDelete() {
+        onLearnAction(.sendDelete)
+        learningAction = true
+        errorMessage = nil
+        refresh()
+    }
+
     @objc private func clearMappings() {
         let alert = NSAlert()
         alert.messageText = AppLanguage.text("清除全部按键映射？", "Clear All Button Mappings?")
@@ -302,6 +324,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
             mappingWindow = ButtonMappingWindow(
                 onChooseApp: onChooseApp,
                 onLearnReturn: { [weak self] in self?.onLearnAction(.sendReturn) },
+                onLearnControlEscape: { [weak self] in self?.onLearnAction(.sendControlEscape) },
+                onLearnDelete: { [weak self] in self?.onLearnAction(.sendDelete) },
                 onRemoveMapping: onRemoveMapping,
                 onTestAction: onTestAction,
                 onCancelLearning: onCancelLearning,
@@ -333,12 +357,16 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 @MainActor private final class ButtonMappingWindow: NSWindowController {
     init(onChooseApp: @escaping (String) -> Void,
          onLearnReturn: @escaping () -> Void,
+         onLearnControlEscape: @escaping () -> Void,
+         onLearnDelete: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
          onTestAction: @escaping (RemoteButtonAction) -> Void,
          onCancelLearning: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         let model = MappingDashboardModel(onChooseApp: onChooseApp,
                                           onLearnReturn: onLearnReturn,
+                                          onLearnControlEscape: onLearnControlEscape,
+                                          onLearnDelete: onLearnDelete,
                                           onRemoveMapping: onRemoveMapping,
                                           onTestAction: onTestAction,
                                           onCancelLearning: onCancelLearning,
@@ -388,6 +416,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
     private let onChooseApp: (String) -> Void
     private let onLearnReturn: () -> Void
+    private let onLearnControlEscape: () -> Void
+    private let onLearnDelete: () -> Void
     private let onRemoveMapping: (Int) -> Void
     private let onTestAction: (RemoteButtonAction) -> Void
     private let onCancelLearning: () -> Void
@@ -395,12 +425,16 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     init(onChooseApp: @escaping (String) -> Void,
          onLearnReturn: @escaping () -> Void,
+         onLearnControlEscape: @escaping () -> Void,
+         onLearnDelete: @escaping () -> Void,
          onRemoveMapping: @escaping (Int) -> Void,
          onTestAction: @escaping (RemoteButtonAction) -> Void,
          onCancelLearning: @escaping () -> Void,
          onLanguageChange: @escaping () -> Void) {
         self.onChooseApp = onChooseApp
         self.onLearnReturn = onLearnReturn
+        self.onLearnControlEscape = onLearnControlEscape
+        self.onLearnDelete = onLearnDelete
         self.onRemoveMapping = onRemoveMapping
         self.onTestAction = onTestAction
         self.onCancelLearning = onCancelLearning
@@ -434,6 +468,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 
     func learnReturn() { onLearnReturn() }
+    func learnControlEscape() { onLearnControlEscape() }
+    func learnDelete() { onLearnDelete() }
     func removeMapping(at index: Int) { onRemoveMapping(index) }
     func testMapping(_ action: RemoteButtonAction) { onTestAction(action) }
     func cancelLearning() { onCancelLearning() }
@@ -587,6 +623,12 @@ private func localizedRuntimeMessage(_ message: String) -> String {
                     Text(AppLanguage.text("自定义操作", "Custom Actions")).font(.system(size: 14)).foregroundStyle(.secondary)
                     Spacer()
                     Button(AppLanguage.text("添加 Return 映射", "Add Return Mapping")) { model.learnReturn() }
+                        .buttonStyle(.bordered)
+                        .disabled(model.learning)
+                    Button(AppLanguage.text("添加 Control+Escape 映射", "Add Control+Escape Mapping")) { model.learnControlEscape() }
+                        .buttonStyle(.bordered)
+                        .disabled(model.learning)
+                    Button(AppLanguage.text("添加 Delete 映射", "Add Delete Mapping")) { model.learnDelete() }
                         .buttonStyle(.bordered)
                         .disabled(model.learning)
                 }
@@ -765,11 +807,11 @@ private func localizedRuntimeMessage(_ message: String) -> String {
             ?? AppLanguage.text("HID 按键", "HID Button")
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: mapping.action.isApp ? "app.fill" : "return")
+                Image(systemName: mapping.action.systemImage)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
-                    .background(mapping.action.isApp ? blue : Color(nsColor: .darkGray), in: Circle())
+                    .background(mapping.action.isApp ? blue : (mapping.action == .sendControlEscape ? Color.purple : Color(nsColor: .darkGray)), in: Circle())
                 VStack(alignment: .leading, spacing: 3) {
                     Text(buttonTitle).font(.system(size: 14, weight: .semibold))
                     Text(mapping.signature).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
@@ -804,6 +846,8 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private func actionName(_ action: RemoteButtonAction) -> String {
         switch action {
         case .sendReturn: return AppLanguage.text("发送 Return", "Send Return")
+        case .sendControlEscape: return AppLanguage.text("发送 Control+Escape", "Send Control+Escape")
+        case .sendDelete: return AppLanguage.text("发送 Delete", "Send Delete")
         case .launchApp(let path): return AppLanguage.text("打开并聚焦输入框 · \(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent)", "Open and Focus Input · \(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent)")
         }
     }
@@ -854,6 +898,15 @@ private extension RemoteButtonAction {
     var isApp: Bool {
         if case .launchApp = self { return true }
         return false
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sendReturn: return "return"
+        case .sendControlEscape: return "escape"
+        case .sendDelete: return "delete.left"
+        case .launchApp: return "app.fill"
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 <img width="1067" height="668" alt="image" src="https://github.com/user-attachments/assets/17ae8bc4-38f2-423b-bba3-500a5e1b2995" />
 
 
-AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remote（第 3 代，型号 L5B83G）成为 Mac 上的无线语音输入遥控器。按住遥控器的麦克风键即可说话；也可以把遥控器上的其他按键映射为打开常用 App 或发送 Return。
+AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remote（第 3 代，型号 L5B83G）成为 Mac 上的无线语音输入遥控器。按住遥控器的麦克风键即可说话；也可以把已识别的非麦克风按键映射为打开常用 App、发送 Return、发送 Control+Escape 或发送 Delete。
 
 项目仍处于实验阶段，目前针对 Alexa Voice Remote 3rd Gen 开发和测试。
 这是一个独立项目，与 Amazon 无隶属或官方合作关系。
@@ -13,7 +13,7 @@ AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remot
 - 将遥控器麦克风的实时音频送入 BlackHole 2ch 等虚拟音频输入设备。
 - 按住麦克风键时，可触发 Fn 或 Option，配合豆包等已有语音输入应用使用。
 - 在按键映射页面识别按键、显示最近按键并高亮遥控器示意图上的对应位置。
-- 将可识别的遥控器按键映射为打开/切换到指定 App，或发送 Return。
+- 将已识别的非麦克风遥控器按键映射为打开/切换到指定 App、发送 Return、发送 Control+Escape 或发送 Delete。
 - 在应用内查看输入监控、辅助功能权限状态，并提供跳转到 macOS 系统设置的入口。
 - 提供简体中文和英文界面。
 
@@ -41,7 +41,7 @@ zsh scripts/build-app.sh
 
 ## 当前限制
 
-- 目前仅针对 Alexa Voice Remote（第 3 代，L5B83G）实现和验证，按键映射仅适用于 macOS 能上报给应用的按键。
+- 目前仅针对 Alexa Voice Remote（第 3 代，L5B83G）实现和验证；已识别的非麦克风按键按 HID signature 映射，未知 HID 报告不支持，麦克风键固定不可绑定。
 - 自动聚焦取决于目标 App 是否向 macOS 暴露可访问的文本输入框；未能聚焦时，请手动点击输入框。
 - 本地构建版本为临时签名，尚未公证。重新构建、移动应用或系统权限状态变化后，macOS 可能要求重新授予权限。
 - 音频识别和语音数据的处理方式由所使用的语音输入应用决定。

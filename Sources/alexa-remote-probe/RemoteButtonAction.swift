@@ -2,6 +2,8 @@ import Foundation
 
 enum RemoteButtonAction: Codable, Equatable {
     case sendReturn
+    case sendControlEscape
+    case sendDelete
     case launchApp(path: String)
 }
 

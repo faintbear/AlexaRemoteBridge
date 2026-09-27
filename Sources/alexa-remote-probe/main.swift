@@ -38,7 +38,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var bridgeEnabled = true
     private var learningAction = false
     private var pendingLearningAction: RemoteButtonAction?
-    private var hidOnlyExecutionTimes: [String: TimeInterval] = [:]
+    private var hidExecutionTimes: [String: TimeInterval] = [:]
     private let hidOnlyDebounceInterval: TimeInterval = 0.35
     private var buttonMappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
@@ -203,7 +203,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
             if hasButtonPayload {
                 let signature = String(format: "%02X:%02X:%02X", reportID, bytes[1], bytes[2])
                 let remoteButton = RemoteButtonKey.resolve(reportID: reportID, usage: usage)
-                if remoteButton?.isHIDOnly == true {
+                let isMicrophone = remoteButton == .microphone || (reportID == 2 && usage == 0x0221)
+                if let remoteButton, remoteButton != .microphone, !isMicrophone {
                     if learningAction {
                         if let action = pendingLearningAction {
                             finishButtonLearning(signature: signature, keyCode: nil, action: action)
@@ -213,13 +214,14 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                   $0.signature == signature && $0.keyCode == nil
                               }) {
                         let now = Date().timeIntervalSince1970
-                        let lastExecution = hidOnlyExecutionTimes[signature] ?? 0
+                        let lastExecution = hidExecutionTimes[signature] ?? 0
                         if now - lastExecution >= hidOnlyDebounceInterval {
-                            hidOnlyExecutionTimes[signature] = now
+                            hidExecutionTimes[signature] = now
                             SpotlightSuppressor.perform(mapping.action)
                         }
                     }
-                } else if !(reportID == 2 && usage == 0x0221) {
+                    spotlightSuppressor?.noteHardwareButton(signature: signature)
+                } else if !isMicrophone {
                     spotlightSuppressor?.noteHardwareButton(signature: signature)
                 }
                 let payload = (0..<safeLength).map { String(format: "%02X", bytes[$0]) }.joined(separator: " ")
@@ -443,7 +445,12 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private func loadReturnMappings() {
         if let data = UserDefaults.standard.data(forKey: "remoteButtonMappings"),
            let decoded = try? JSONDecoder().decode([RemoteButtonMapping].self, from: data) {
-            buttonMappings = decoded
+            let filtered = decoded.filter { RemoteButtonKey.resolve(signature: $0.signature) != .microphone }
+            buttonMappings = filtered
+            if filtered.count != decoded.count,
+               let cleanedData = try? JSONEncoder().encode(filtered) {
+                UserDefaults.standard.set(cleanedData, forKey: "remoteButtonMappings")
+            }
         }
     }
 
@@ -458,6 +465,10 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     }
 
     private func finishButtonLearning(signature: String, keyCode: UInt16?, action: RemoteButtonAction) {
+        guard RemoteButtonKey.resolve(signature: signature) != .microphone else {
+            cancelButtonLearning()
+            return
+        }
         learningAction = false
         pendingLearningAction = nil
         spotlightSuppressor?.cancelReturnButtonLearning()
@@ -470,7 +481,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         }
         spotlightSuppressor?.setMappings(buttonMappings)
         if keyCode == nil {
-            hidOnlyExecutionTimes[signature] = Date().timeIntervalSince1970
+            hidExecutionTimes[signature] = Date().timeIntervalSince1970
         }
         refreshMenu()
         print("remote_button_mapped signature=\(signature) keycode=\(keyCode.map(String.init) ?? "hid-only") action=\(action)")
