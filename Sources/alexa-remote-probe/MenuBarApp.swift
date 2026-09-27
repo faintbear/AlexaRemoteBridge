@@ -90,7 +90,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private var enabled = true
     private var learningAction = false
     private var mappingCount = 0
-    private var canLearnReturn = false
     private var mode: VoiceInputMode
     private var errorMessage: String?
     private var permissionNotice: String?
@@ -127,7 +126,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 
     func update(connected: Bool, speaking: Bool, enabled: Bool,
-                learningAction: Bool, mappingCount: Int, canLearnReturn: Bool,
+                learningAction: Bool, mappingCount: Int,
                 permissionNotice: String?, mappings: [RemoteButtonMapping],
                 detectedButtons: [DetectedRemoteButton],
                 inputMonitoringStatus: PermissionStatus, accessibilityStatus: PermissionStatus) {
@@ -136,7 +135,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.enabled = enabled
         self.learningAction = learningAction
         self.mappingCount = mappingCount
-        self.canLearnReturn = canLearnReturn
         self.permissionNotice = permissionNotice
         self.mappings = mappings
         self.detectedButtons = detectedButtons
@@ -201,21 +199,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         }
         menu.setSubmenu(languageMenu, for: languageItem)
         menu.addItem(languageItem)
-        let launch = NSMenuItem(title: AppLanguage.text("学习按键打开 App 并聚焦输入框…", "Map Button to Open App and Focus Input…"), action: #selector(chooseApp), keyEquivalent: "")
-        launch.target = self
-        launch.isEnabled = !learningAction && canLearnReturn
-        menu.addItem(launch)
-        let controlEscape = NSMenuItem(title: AppLanguage.text("学习按键发送 Control+Escape", "Map Button to Send Control+Escape"), action: #selector(learnControlEscape), keyEquivalent: "")
-        controlEscape.target = self
-        controlEscape.isEnabled = !learningAction && canLearnReturn
-        menu.addItem(controlEscape)
-        let deleteKey = NSMenuItem(title: AppLanguage.text("学习按键发送 Delete", "Map Button to Send Delete"), action: #selector(learnDelete), keyEquivalent: "")
-        deleteKey.target = self
-        deleteKey.isEnabled = !learningAction && canLearnReturn
-        menu.addItem(deleteKey)
-        let settings = NSMenuItem(title: AppLanguage.text("按键映射设置…", "Button Mapping Settings…"), action: #selector(openMappingSettings), keyEquivalent: "")
-        settings.target = self
-        menu.addItem(settings)
         let clear = NSMenuItem(title: AppLanguage.text("清除按键映射", "Clear Button Mappings"), action: #selector(clearMappings), keyEquivalent: "")
         clear.target = self
         clear.isEnabled = mappingCount > 0
@@ -272,35 +255,6 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     @objc private func quitApp() {
         onQuit()
         NSApplication.shared.terminate(nil)
-    }
-
-    @objc private func chooseApp() {
-        let panel = NSOpenPanel()
-        panel.title = AppLanguage.text("选择按键要打开并聚焦输入框的 App", "Choose the app to open and focus with this button")
-        panel.prompt = AppLanguage.text("选择 App", "Choose App")
-        panel.allowedContentTypes = [.application]
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.begin { [weak self] response in
-            guard response == .OK, let path = panel.url?.path, let self else { return }
-            self.onChooseApp(path)
-            self.learningAction = true
-            self.refresh()
-        }
-    }
-
-    @objc private func learnControlEscape() {
-        onLearnAction(.sendControlEscape)
-        learningAction = true
-        errorMessage = nil
-        refresh()
-    }
-
-    @objc private func learnDelete() {
-        onLearnAction(.sendDelete)
-        learningAction = true
-        errorMessage = nil
-        refresh()
     }
 
     @objc private func clearMappings() {

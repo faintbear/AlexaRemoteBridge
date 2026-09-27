@@ -337,7 +337,6 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private func refreshMenu() {
         menuBar?.update(connected: remote != nil, speaking: streaming, enabled: bridgeEnabled,
                         learningAction: learningAction, mappingCount: buttonMappings.count,
-                        canLearnReturn: spotlightSuppressor != nil,
                         permissionNotice: permissionNotice, mappings: buttonMappings,
                         detectedButtons: detectedButtons,
                         inputMonitoringStatus: inputMonitoringStatus,
