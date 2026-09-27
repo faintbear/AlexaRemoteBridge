@@ -6,7 +6,7 @@
 
 <p align="right"><a href="README.zh-CN.md">简体中文</a> &nbsp;·&nbsp; <a href="README.md">English</a></p>
 
-AlexaRemoteBridge is a macOS menu bar app that turns the Amazon Alexa Voice Remote (3rd Gen, model L5B83G) into a wireless voice-input controller for your Mac. Hold the remote’s microphone button to speak, or map other remote buttons to open an app or send Return.
+AlexaRemoteBridge is a macOS menu bar app that turns the Amazon Alexa Voice Remote (3rd Gen, model L5B83G) into a wireless voice-input controller for your Mac. Hold the remote’s microphone button to speak, or map recognized non-microphone buttons to open an app, send Return, Control+Escape, or Delete.
 
 This project is experimental and currently developed and tested for the Alexa Voice Remote 3rd Gen.
 It is an independent project and is not affiliated with Amazon.
@@ -16,7 +16,7 @@ It is an independent project and is not affiliated with Amazon.
 - Routes live audio from the remote’s microphone to a virtual audio input such as BlackHole 2ch.
 - Can trigger Fn or Option while the microphone button is held, for use with existing dictation apps.
 - Detects remote buttons, shows recent events, and highlights the corresponding button on the remote illustration.
-- Maps supported remote buttons to launch or activate an app, or send Return.
+- Maps recognized non-microphone remote buttons to launch or activate an app, send Return, Control+Escape, or Delete.
 - Shows Input Monitoring and Accessibility permission status and links to the relevant macOS settings.
 - Includes Simplified Chinese and English UI.
 
@@ -44,7 +44,7 @@ When the build finishes, open `dist/AlexaRemoteBridge.app`. BlackHole is a separ
 
 ## Current limitations
 
-- Currently implemented and tested for the Alexa Voice Remote 3rd Gen (L5B83G). Button mapping only works for buttons macOS exposes to the app as keyboard events.
+- Currently implemented and tested for the Alexa Voice Remote 3rd Gen (L5B83G). Recognized non-microphone buttons are mapped by HID signature; unknown HID reports are not supported, and the microphone button remains fixed.
 - Automatic text-field focusing depends on whether the target app exposes an accessible input field to macOS. If focusing fails, click the field manually.
 - Local builds are ad-hoc signed and not notarized. macOS may ask you to grant permissions again after rebuilding or moving the app, or when permission state changes.
 - Speech recognition and handling of voice data are determined by the dictation app you use.

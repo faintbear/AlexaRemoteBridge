@@ -25,53 +25,26 @@ final class SpotlightSuppressor: @unchecked Sendable {
                                           callback: { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let state = Unmanaged<State>.fromOpaque(context).takeUnretainedValue()
-            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                SpotlightSuppressor.logger.error("event tap disabled; re-enabling")
-                if let tap = state.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            switch state.handle(type: type, event: event) {
+            case .pass:
                 return Unmanaged.passUnretained(event)
-            }
-            if event.getIntegerValueField(.eventSourceUserData) == State.syntheticEventMarker {
-                return Unmanaged.passUnretained(event)
-            }
-            if (type == .keyDown || type == .keyUp),
-               event.getIntegerValueField(.keyboardEventKeycode) == 177 {
-                if state.remoteConnected && state.bridgeEnabled {
-                    return nil
-                }
-            }
-            guard type == .keyDown || type == .keyUp else {
-                return Unmanaged.passUnretained(event)
-            }
-            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-            let now = Date().timeIntervalSince1970
-            if type == .keyUp, state.suppressedKeyCodes.remove(keyCode) != nil {
+            case .suppress:
                 return nil
-            }
-            guard type == .keyDown, let signature = state.pendingButtonSignature,
-                  now <= state.pendingButtonUntil else {
+            case .reenable(let tap):
+                SpotlightSuppressor.logger.error("event tap disabled; re-enabling")
+                CGEvent.tapEnable(tap: tap, enable: true)
                 return Unmanaged.passUnretained(event)
-            }
-            state.pendingButtonSignature = nil
-            if let action = state.learningAction {
-                state.actionsByKeyCode[keyCode] = action
-                state.signaturesByKeyCode[keyCode] = signature
-                state.learningAction = nil
-                let onButtonLearned = state.onButtonLearned
-                state.onButtonLearned = nil
+            case .perform(let action):
+                SpotlightSuppressor.perform(action)
+                return nil
+            case .learned(let signature, let keyCode, let action):
                 fputs("remote_button_learning_captured signature=\(signature) keycode=\(keyCode)\n", stderr)
+                let onButtonLearned = state.takeLearningCallback()
                 DispatchQueue.main.async {
                     onButtonLearned?(signature, keyCode, action)
                 }
-                state.suppressedKeyCodes.insert(keyCode)
                 return nil
             }
-            guard state.signaturesByKeyCode[keyCode] == signature,
-                  let action = state.actionsByKeyCode[keyCode] else {
-                return Unmanaged.passUnretained(event)
-            }
-            state.suppressedKeyCodes.insert(keyCode)
-            SpotlightSuppressor.perform(action)
-            return nil
         }, userInfo: context) else {
             Unmanaged<State>.fromOpaque(context).release()
             throw SuppressorError.accessibilityRequired
@@ -92,36 +65,50 @@ final class SpotlightSuppressor: @unchecked Sendable {
     }
 
     func setRemoteConnected(_ connected: Bool) {
-        state.remoteConnected = connected
+        state.withLock { state.remoteConnected = connected }
     }
 
     func setBridgeEnabled(_ enabled: Bool) {
-        state.bridgeEnabled = enabled
+        state.withLock { state.bridgeEnabled = enabled }
     }
 
     func setMappings(_ mappings: [RemoteButtonMapping]) {
-        let keyCodeMappings = mappings.compactMap { mapping -> (UInt16, RemoteButtonMapping)? in
+        let usableMappings = mappings.filter { RemoteButtonKey.resolve(signature: $0.signature) != .microphone }
+        let keyCodeMappings = usableMappings.compactMap { mapping -> (UInt16, RemoteButtonMapping)? in
             guard let keyCode = mapping.keyCode else { return nil }
             return (keyCode, mapping)
         }
-        state.actionsByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.action) })
-        state.signaturesByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.signature) })
+        let directSignatures = usableMappings.compactMap { mapping -> String? in
+            guard mapping.keyCode == nil else { return nil }
+            return mapping.signature
+        }
+        state.withLock {
+            state.actionsByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.action) })
+            state.signaturesByKeyCode = Dictionary(uniqueKeysWithValues: keyCodeMappings.map { ($0.0, $0.1.signature) })
+            state.directSignatures = Set(directSignatures)
+        }
     }
 
     func noteHardwareButton(signature: String) {
-        state.pendingButtonSignature = signature
-        state.pendingButtonUntil = Date().timeIntervalSince1970 + 0.25
+        state.withLock {
+            state.pendingButtonSignature = signature
+            state.pendingButtonUntil = Date().timeIntervalSince1970 + 0.25
+        }
     }
 
     func beginButtonLearning(action: RemoteButtonAction,
                              onLearned: @escaping (String, UInt16?, RemoteButtonAction) -> Void) {
-        state.learningAction = action
-        state.onButtonLearned = onLearned
+        state.withLock {
+            state.learningAction = action
+            state.onButtonLearned = onLearned
+        }
     }
 
     func cancelReturnButtonLearning() {
-        state.learningAction = nil
-        state.onButtonLearned = nil
+        state.withLock {
+            state.learningAction = nil
+            state.onButtonLearned = nil
+        }
     }
 
     static func perform(_ action: RemoteButtonAction) {
@@ -129,6 +116,10 @@ final class SpotlightSuppressor: @unchecked Sendable {
             switch action {
             case .sendReturn:
                 postReturn()
+            case .sendControlEscape:
+                postControlEscape()
+            case .sendDelete:
+                postDelete()
             case .launchApp(let path):
                 openAppAndFocusInput(path: path)
             }
@@ -445,6 +436,31 @@ final class SpotlightSuppressor: @unchecked Sendable {
         return score >= 60 ? score : 0
     }
 
+    private static func postControlEscape() {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let controlDown = CGEvent(keyboardEventSource: source, virtualKey: 59, keyDown: true),
+              let escapeDown = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true),
+              let escapeUp = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false),
+              let controlUp = CGEvent(keyboardEventSource: source, virtualKey: 59, keyDown: false) else { return }
+
+        escapeDown.flags = .maskControl
+        escapeUp.flags = .maskControl
+        for event in [controlDown, escapeDown, escapeUp, controlUp] {
+            event.setIntegerValueField(.eventSourceUserData, value: State.syntheticEventMarker)
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    private static func postDelete() {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: false) else { return }
+        down.setIntegerValueField(.eventSourceUserData, value: State.syntheticEventMarker)
+        up.setIntegerValueField(.eventSourceUserData, value: State.syntheticEventMarker)
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
     private static func postReturn() {
         guard let source = CGEventSource(stateID: .hidSystemState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),
@@ -457,7 +473,16 @@ final class SpotlightSuppressor: @unchecked Sendable {
 }
 
 private final class State: @unchecked Sendable {
+    enum EventDecision {
+        case pass
+        case suppress
+        case reenable(CFMachPort)
+        case perform(RemoteButtonAction)
+        case learned(signature: String, keyCode: UInt16, action: RemoteButtonAction)
+    }
+
     static let syntheticEventMarker: Int64 = 0x41524D4150504544
+    let lock = NSLock()
     var tap: CFMachPort?
     var remoteConnected = false
     var bridgeEnabled = true
@@ -465,9 +490,71 @@ private final class State: @unchecked Sendable {
     var pendingButtonUntil: TimeInterval = 0
     var signaturesByKeyCode: [UInt16: String] = [:]
     var actionsByKeyCode: [UInt16: RemoteButtonAction] = [:]
+    var directSignatures: Set<String> = []
     var suppressedKeyCodes: Set<UInt16> = []
     var learningAction: RemoteButtonAction?
     var onButtonLearned: ((String, UInt16?, RemoteButtonAction) -> Void)?
+
+    func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    func takeLearningCallback() -> ((String, UInt16?, RemoteButtonAction) -> Void)? {
+        withLock {
+            let callback = onButtonLearned
+            onButtonLearned = nil
+            return callback
+        }
+    }
+
+    func handle(type: CGEventType, event: CGEvent) -> EventDecision {
+        withLock {
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                guard let tap else { return .pass }
+                return .reenable(tap)
+            }
+            if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticEventMarker {
+                return .pass
+            }
+            guard type == .keyDown || type == .keyUp else {
+                return .pass
+            }
+
+            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            if keyCode == 177, remoteConnected, bridgeEnabled {
+                return .suppress
+            }
+            let now = Date().timeIntervalSince1970
+            if type == .keyUp, suppressedKeyCodes.remove(keyCode) != nil {
+                return .suppress
+            }
+            guard let signature = pendingButtonSignature,
+                  type == .keyDown,
+                  now <= pendingButtonUntil else {
+                return .pass
+            }
+            pendingButtonSignature = nil
+            if let action = learningAction {
+                actionsByKeyCode[keyCode] = action
+                signaturesByKeyCode[keyCode] = signature
+                learningAction = nil
+                suppressedKeyCodes.insert(keyCode)
+                return .learned(signature: signature, keyCode: keyCode, action: action)
+            }
+            if bridgeEnabled, directSignatures.contains(signature) {
+                suppressedKeyCodes.insert(keyCode)
+                return .suppress
+            }
+            guard signaturesByKeyCode[keyCode] == signature,
+                  let action = actionsByKeyCode[keyCode] else {
+                return .pass
+            }
+            suppressedKeyCodes.insert(keyCode)
+            return .perform(action)
+        }
+    }
 }
 
 private enum SuppressorError: Error {
