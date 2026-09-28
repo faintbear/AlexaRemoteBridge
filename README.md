@@ -14,20 +14,21 @@ It is an independent project and is not affiliated with Amazon.
 ## Features
 
 - Routes live audio from the remote’s microphone to a virtual audio input such as BlackHole 2ch.
-- Can trigger Fn or Option while the microphone button is held, for use with existing dictation apps.
+- Can trigger Fn or Option while the microphone button is held for Doubao Input Method voice input.
+- Checks the active macOS input source and prompts you to switch to Doubao Input Method when needed.
 - Detects remote buttons, shows recent events, and highlights the corresponding button on the remote illustration.
 - Maps recognized non-microphone remote buttons to launch or activate an app, send Return, Control+Escape, or Delete.
 - Shows Input Monitoring and Accessibility permission status and links to the relevant macOS settings.
 - Includes Simplified Chinese and English UI.
 
-AlexaRemoteBridge handles audio transport and button actions; it does not perform speech recognition. Speech-to-text is provided by your chosen dictation app.
+AlexaRemoteBridge handles audio transport and button actions; it does not perform speech recognition. Voice input is designed for Doubao Input Method, which provides speech-to-text.
 
 ## Getting started
 
 1. Pair the remote in macOS Bluetooth settings and launch AlexaRemoteBridge.
-2. Install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). Restart your Mac if prompted, then select BlackHole 2ch as the microphone input in your dictation app.
+2. Install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). Restart your Mac if prompted, then switch macOS to Doubao Input Method and select BlackHole 2ch as its microphone input.
 3. Grant Input Monitoring and Accessibility permissions when prompted. The Permissions page shows their status.
-4. Configure button actions in the mapping page. Hold the remote’s microphone button to speak; your dictation app handles transcription after you release it.
+4. Configure button actions in the mapping page. Hold the remote’s microphone button to speak; Doubao Input Method handles transcription after you release it.
 
 The app runs in the menu bar. Choose “Open Main Window” to access button mapping and permissions. The microphone trigger mode can be changed from the menu bar.
 
