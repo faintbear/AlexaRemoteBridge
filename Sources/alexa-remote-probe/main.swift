@@ -43,6 +43,9 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private var buttonMappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
     private var permissionNotice: String?
+    private var inputSourceStatus: InputSourceStatus = .unavailable
+    private var inputSourceAlertActive = false
+    private var promptedInputSourceIdentifier: String?
     private var inputMonitoringStatus: PermissionStatus = .notGranted
     private var inputMonitoringManagerOpened = false
     private var accessibilityStatus: PermissionStatus = .notGranted
@@ -100,6 +103,7 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         let options = seize ? IOOptionBits(kIOHIDOptionsTypeSeizeDevice) : IOOptionBits(kIOHIDOptionsTypeNone)
         let result = IOHIDManagerOpen(manager, options)
         inputMonitoringManagerOpened = result == kIOReturnSuccess
+        refreshInputSourceStatus(showPrompt: false)
         updatePermissionStatuses(retryManagerOpen: false)
         if result != kIOReturnSuccess, !appMode {
             throw ProbeError.openFailed(result)
@@ -127,8 +131,15 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
                                  onCancelLearning: { [weak self] in self?.cancelButtonLearning() },
                                  onQuit: { [weak self] in self?.stop() })
             refreshMenu()
-            // Recheck TCC and runtime readiness while the app runs so returning from
-            // System Settings updates permission indicators without a manual refresh.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.refreshInputSourceStatus(showPrompt: true) {
+                    self.refreshMenu()
+                }
+            }
+            // Recheck TCC, runtime readiness, and the active input source while the app
+            // runs so returning from System Settings or switching input methods updates
+            // the menu without a manual refresh.
             permissionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshPermissions() }
             }
@@ -337,7 +348,8 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
     private func refreshMenu() {
         menuBar?.update(connected: remote != nil, speaking: streaming, enabled: bridgeEnabled,
                         learningAction: learningAction, mappingCount: buttonMappings.count,
-                        permissionNotice: permissionNotice, mappings: buttonMappings,
+                        permissionNotice: permissionNotice, inputSourceNotice: inputSourceStatus.menuNotice,
+                        mappings: buttonMappings,
                         detectedButtons: detectedButtons,
                         inputMonitoringStatus: inputMonitoringStatus,
                         accessibilityStatus: accessibilityStatus)
@@ -382,6 +394,54 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         permissionNotice = permissionNoticeForCurrentStatuses()
     }
 
+    @discardableResult
+    private func refreshInputSourceStatus(showPrompt: Bool) -> Bool {
+        guard appMode else { return false }
+        let current = InputSourceMonitor.current()
+        let changed = current != inputSourceStatus
+        inputSourceStatus = current
+
+        if current.isDoubao {
+            promptedInputSourceIdentifier = nil
+        }
+
+        guard showPrompt, case .other = current, !inputSourceAlertActive else { return changed }
+        let promptIdentifier = current.identifier ?? current.name ?? "unknown"
+        guard promptedInputSourceIdentifier != promptIdentifier else { return changed }
+        promptedInputSourceIdentifier = promptIdentifier
+        showDoubaoInputMethodAlert(current)
+        return changed
+    }
+
+    private func showDoubaoInputMethodAlert(_ status: InputSourceStatus) {
+        guard case .other(_, let name) = status else { return }
+        inputSourceAlertActive = true
+        defer { inputSourceAlertActive = false }
+
+        let alert = NSAlert()
+        alert.messageText = AppLanguage.text("请切换到豆包输入法", "Switch to Doubao Input Method")
+        if name.isEmpty {
+            alert.informativeText = AppLanguage.text(
+                "AlexaRemoteBridge 需要豆包输入法接收语音输入，请切换后再使用。",
+                "AlexaRemoteBridge uses Doubao Input Method for voice input. Please switch before using voice input."
+            )
+        } else {
+            alert.informativeText = AppLanguage.text(
+                "当前输入法：\(name)。请切换到豆包输入法后再使用语音输入。",
+                "Current input method: \(name). Please switch to Doubao Input Method before using voice input."
+            )
+        }
+        alert.alertStyle = .warning
+        let openSettings = alert.addButton(withTitle: AppLanguage.text("打开输入法设置", "Open Input Method Settings"))
+        let later = alert.addButton(withTitle: AppLanguage.text("稍后", "Later"))
+        later.keyEquivalent = "\r"
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            InputSourceMonitor.openSettings()
+        }
+        _ = openSettings
+    }
+
     private func permissionNoticeForCurrentStatuses() -> String? {
         switch inputMonitoringStatus {
         case .notGranted:
@@ -404,8 +464,10 @@ private func hexPrefix(_ bytes: UnsafePointer<UInt8>, length: Int, limit: Int = 
         let previousInputMonitoring = inputMonitoringStatus
         let previousAccessibility = accessibilityStatus
         let previousNotice = permissionNotice
+        let inputSourceChanged = refreshInputSourceStatus(showPrompt: true)
         updatePermissionStatuses(retryManagerOpen: true)
-        guard previousInputMonitoring != inputMonitoringStatus ||
+        guard inputSourceChanged ||
+              previousInputMonitoring != inputMonitoringStatus ||
               previousAccessibility != accessibilityStatus ||
               previousNotice != permissionNotice else { return }
         refreshMenu()

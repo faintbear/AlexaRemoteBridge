@@ -5,7 +5,7 @@ import IOKit.hidsystem
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum AppLanguage {
+enum AppLanguage {
     enum Choice: String, CaseIterable, Identifiable {
         case system
         case chinese
@@ -72,6 +72,19 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     }
 }
 
+private func localizedInputSourceMessage(_ message: String) -> String {
+    if message == "当前输入法不是豆包输入法，请切换后再使用" {
+        return AppLanguage.text(message, "The current input method is not Doubao. Please switch before using voice input.")
+    }
+    let prefix = "当前输入法："
+    if message.hasPrefix(prefix), let separator = message.firstIndex(of: "，") {
+        let nameStart = message.index(message.startIndex, offsetBy: prefix.count)
+        let name = String(message[nameStart..<separator])
+        return AppLanguage.text(message, "Current input method: \(name). Please switch to Doubao Input Method.")
+    }
+    return message
+}
+
 /// A small everyday entry point while the full button-mapping window is built.
 @MainActor final class MenuBarApp: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -93,6 +106,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
     private var mode: VoiceInputMode
     private var errorMessage: String?
     private var permissionNotice: String?
+    private var inputSourceNotice: String?
     private var mappingWindow: ButtonMappingWindow?
     private var mappings: [RemoteButtonMapping] = []
     private var detectedButtons: [DetectedRemoteButton] = []
@@ -127,7 +141,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
 
     func update(connected: Bool, speaking: Bool, enabled: Bool,
                 learningAction: Bool, mappingCount: Int,
-                permissionNotice: String?, mappings: [RemoteButtonMapping],
+                permissionNotice: String?, inputSourceNotice: String?, mappings: [RemoteButtonMapping],
                 detectedButtons: [DetectedRemoteButton],
                 inputMonitoringStatus: PermissionStatus, accessibilityStatus: PermissionStatus) {
         self.connected = connected
@@ -136,6 +150,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         self.learningAction = learningAction
         self.mappingCount = mappingCount
         self.permissionNotice = permissionNotice
+        self.inputSourceNotice = inputSourceNotice
         self.mappings = mappings
         self.detectedButtons = detectedButtons
         self.isRemoteConnected = connected
@@ -158,6 +173,7 @@ private func localizedRuntimeMessage(_ message: String) -> String {
         addStatus(learningAction ? AppLanguage.text("按键学习：请按要绑定动作的遥控器按键", "Learning: Press a remote button to bind") :
                   AppLanguage.text("按键映射：已配置 \(mappingCount) 个", "Button mappings: \(mappingCount) configured"))
         if let permissionNotice { addStatus(localizedRuntimeMessage(permissionNotice)) }
+        if let inputSourceNotice { addStatus(localizedInputSourceMessage(inputSourceNotice)) }
         if let errorMessage { addStatus("\(AppLanguage.text("提示", "Notice")): \(errorMessage)") }
         menu.addItem(.separator())
 

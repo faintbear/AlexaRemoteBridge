@@ -11,20 +11,21 @@ AlexaRemoteBridge 是一款 macOS 菜单栏应用，让 Amazon Alexa Voice Remot
 ## 功能
 
 - 将遥控器麦克风的实时音频送入 BlackHole 2ch 等虚拟音频输入设备。
-- 按住麦克风键时，可触发 Fn 或 Option，配合豆包等已有语音输入应用使用。
+- 按住麦克风键时，可触发 Fn 或 Option，配合豆包输入法完成语音输入。
+- 检测当前 macOS 输入法；如果当前不是豆包输入法，会提示用户切换。
 - 在按键映射页面识别按键、显示最近按键并高亮遥控器示意图上的对应位置。
 - 将已识别的非麦克风遥控器按键映射为打开/切换到指定 App、发送 Return、发送 Control+Escape 或发送 Delete。
 - 在应用内查看输入监控、辅助功能权限状态，并提供跳转到 macOS 系统设置的入口。
 - 提供简体中文和英文界面。
 
-AlexaRemoteBridge 负责传输音频和按键操作，不包含语音识别。语音转文字由你选择的输入法或听写应用完成。
+AlexaRemoteBridge 负责传输音频和按键操作，不包含语音识别。语音转文字由豆包输入法完成。
 
 ## 开始使用
 
 1. 在 macOS 蓝牙设置中配对遥控器，并启动 AlexaRemoteBridge。
-2. 安装 [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)；如果安装器提示，请重启 Mac。然后在豆包或其他语音输入应用中选择 BlackHole 2ch 作为麦克风输入。
+2. 安装 [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)；如果安装器提示，请重启 Mac。切换到豆包输入法，并在豆包输入法中选择 BlackHole 2ch 作为麦克风输入。
 3. 按应用提示授予“输入监控”和“辅助功能”权限。权限页面会显示各项授权状态。
-4. 在按键映射页面设置所需操作。按住遥控器麦克风键说话，松开后由语音输入应用完成识别。
+4. 在按键映射页面设置所需操作。按住遥控器麦克风键说话，松开后由豆包输入法完成识别。
 
 应用运行在菜单栏。选择“打开主界面”可打开按键映射和权限页面；麦克风触发方式可从菜单栏切换。
 
