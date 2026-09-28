@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="120" y1="80" x2="900" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#071936"/>
+      <stop offset="0.48" stop-color="#123D78"/>
+      <stop offset="1" stop-color="#08A8D5"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 432) rotate(90) scale(430)">
+      <stop offset="0" stop-color="#B9F7FF" stop-opacity="0.46"/>
+      <stop offset="0.48" stop-color="#31D8F2" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#31D8F2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="letter" x1="320" y1="300" x2="700" y2="680" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#D8FAFF"/>
+      <stop offset="1" stop-color="#83EAF7"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="270" y1="710" x2="760" y2="710" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DEBFA" stop-opacity="0.15"/>
+      <stop offset="0.45" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#7DEBFA" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="22" stdDeviation="22" flood-color="#001126" flood-opacity="0.5"/>
+    </filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <clipPath id="iconShape">
+      <rect x="24" y="24" width="976" height="976" rx="220"/>
+    </clipPath>
+  </defs>
+
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="#06152F"/>
+  <g clip-path="url(#iconShape)">
+    <rect x="24" y="24" width="976" height="976" fill="url(#background)"/>
+    <circle cx="512" cy="430" r="430" fill="url(#halo)"/>
+
+    <path d="M169 506C169 316 323 162 512 162C701 162 855 316 855 506" fill="none" stroke="#8CEEFF" stroke-width="13" stroke-linecap="round" opacity="0.22"/>
+    <path d="M217 506C217 343 349 211 512 211C675 211 807 343 807 506" fill="none" stroke="#D4FBFF" stroke-width="5" stroke-linecap="round" opacity="0.32"/>
+
+    <circle cx="512" cy="456" r="274" fill="#082958" fill-opacity="0.34" stroke="#A9F5FF" stroke-opacity="0.2" stroke-width="2"/>
+    <circle cx="512" cy="456" r="252" fill="none" stroke="#65E6F5" stroke-opacity="0.16" stroke-width="2" stroke-dasharray="4 22"/>
+
+    <path d="M280 672C342 730 420 760 512 760C604 760 682 730 744 672" fill="none" stroke="#58E5F4" stroke-width="32" stroke-linecap="round" opacity="0.32" filter="url(#glow)"/>
+    <path d="M280 672C342 730 420 760 512 760C604 760 682 730 744 672" fill="none" stroke="url(#signal)" stroke-width="13" stroke-linecap="round"/>
+
+    <g filter="url(#shadow)">
+      <text x="512" y="602" text-anchor="middle" font-family="SF Pro Display, SF Pro, Helvetica Neue, Arial, sans-serif" font-size="382" font-weight="800" letter-spacing="-34" fill="#061A3A" opacity="0.42">AR</text>
+      <text x="512" y="582" text-anchor="middle" font-family="SF Pro Display, SF Pro, Helvetica Neue, Arial, sans-serif" font-size="382" font-weight="800" letter-spacing="-34" fill="url(#letter)">AR</text>
+    </g>
+
+    <circle cx="245" cy="672" r="8" fill="#D9FCFF"/>
+    <circle cx="779" cy="672" r="8" fill="#D9FCFF"/>
+    <circle cx="512" cy="766" r="7" fill="#FFFFFF" opacity="0.9"/>
+  </g>
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="3"/>
+</svg>
